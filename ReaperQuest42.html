@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Reaper's Ghostly Duty</title>
+    <style>
+        body { margin:0;padding:0;display:flex;justify-content:center;align-items:center;height:100vh;background-color:#333;font-family:'Courier New',Courier,monospace;overflow:hidden; }
+        /* Pixelated rendering ensures the retro, crisp-pixel art style is maintained without browser anti-aliasing. */
+        canvas { border:2px solid #000;background-color:#78a355;touch-action:none;user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;image-rendering:pixelated;image-rendering:-moz-crisp-edges;image-rendering:crisp-edges; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+// The main Game object, a singleton that holds the entire game's state, logic, and data.
+const Game = {
+    // Core canvas and rendering context
+    canvas:null,ctx:null,
+    // Game constants
+    TILE_SIZE:32,MAP_WIDTH_TILES:0,MAP_HEIGHT_TILES:0,VIEWPORT_WIDTH_TILES:10,VIEWPORT_HEIGHT_TILES:12,
+    // Getters for calculated pixel dimensions, derived from tile-based dimensions.
+    get MAP_WIDTH_PX(){return this.MAP_WIDTH_TILES*this.TILE_SIZE;}, get MAP_HEIGHT_PX(){return this.MAP_HEIGHT_TILES*this.TILE_SIZE;},
+    get VIEWPORT_WIDTH_PX(){return this.VIEWPORT_WIDTH_TILES*this.TILE_SIZE;}, get VIEWPORT_HEIGHT_PX(){return this.VIEWPORT_HEIGHT_TILES*this.TILE_SIZE;},
+    // Game state machine definitions
+    STATE_START_SCREEN:'start_screen',STATE_PLAYING:'playing',STATE_PLAYER_DEATH_ANIM:'player_death_anim',STATE_NEXT_LEVEL_TRANSITION:'next_level_transition',STATE_GAME_OVER:'game_over',STATE_INSIDE_MANSION:'inside_mansion',STATE_INSIDE_CASTLE:'inside_castle',STATE_INSIDE_HOUSE:'inside_house',currentState:'',
+    // Level and progression variables
+    level:1,ghostsCollected:0,GHOSTS_PER_LEVEL:4,
+    // Arrays to hold all game objects and entities
+    map:[],ghosts:[],skulls:[],zombies:[],projectiles:[],collectibles:[],bats:[],ghostParticles:[],ogres:[],gargoyles:[],slimes:[],turrets:[],skeletons:[],boneParticles:[],smokeParticles:[],dragons:[],scatterParticles:[],mansion:null,mansionMap:[],castle:null,castleMap:[],house:null,houseMap:[],walls:[],teleporters:[],bombs:[],mapRevealed:false,interiorCollectibles:[],
+    // Intro scroll text properties
+    introScroll:{x:0,speed:60,text:[],textWidth:0,ghostImageWidth:20},
+    // The player object, containing all player-specific state
+    player:{x:0,y:0,width:32,height:32,speed:120,vx:0,vy:0,walkAnimTimer:0,walkFrame:0,idleAnimTimer:0,idleFrame:0,eyeDrawStyle:0,eyeBlinkState:'OPEN',eyeBlinkTimer:0,eyeBlinkRandomInterval:3+Math.random()*2,isMoving:false,lastDir:{x:0,y:-1}, lives:3, energy:3, maxEnergy:3, invincibleTimer:0, deathAnimTimer:0, isGhostMode:false, ghostModeTimer:0, orbs:0, inventory:[], currentItemIndex:0, outsideX:0, outsideY:0, teleportCooldown:0, hasCastleKey: false, hasShownCastleHint: false},
+    // Camera object for viewport management
+    camera:{x:0,y:0},
+    // Joystick object for touch controls
+    joystick:{active:false,touchId:null,baseX:0,baseY:0,baseRadius:50,knobX:0,knobY:0,knobRadius:25,inputX:0,inputY:0},
+    // UI elements and layout data
+    ui:{viewportX:0,viewportY:0,restartButton:{x:0,y:0,width:0,height:0,text:"RESTART LVL"},itemBox:{x:0,y:0,w:60,h:50},leftArrow:{x:0,y:0,w:20,h:50},rightArrow:{x:0,y:0,w:20,h:50},useButton:{x:0,y:0,w:80,h:50,text:"USE"}},
+    // Animation timers and frame data
+    animation:{waterFrame:0,waterAnimTimer:0,waterFrameDuration:0.20,ghostFrame:0,ghostAnimTimer:0,ghostFrameDuration:0.1,reaperIdleFrameDuration:0.30,reaperWalkFrameDuration:0.12,eyeBlinkPhaseDurations:[0.07,0.06,0.07],zombieSpawnTimer:10,zombieSpawnEffectDuration:1.0,zombieAttackDuration:0.5,collectibleSpawnTimer:6,batSpawnTimer:15,batFrame:0,batAnimTimer:0,batFrameDuration:0.1,slimeSpawnTimer:25,slimeFrame:0,slimeAnimTimer:0,slimeFrameDuration:0.15,skeletonSpawnTimer:20,ogreSpawnTimer:0,gargoyleSpawnTimer:0,dragonSpawnTimer:0,teleporterFrame:0,teleporterAnimTimer:0,teleporterFrameDuration:0.1},
+    // Time-keeping variables for the game loop
+    lastTime:0,deltaTime:0,
+    // Other state variables
+    transitionTimer:0,shootTimer:0,levelMessageTimer:0,levelMessageText:"",allyMessageTimer:0,allyMessageText:"",
+    // Simple seeded pseudo-random number generator for deterministic map generation
+    rngSeed:0,setSeed:function(s){this.rngSeed=s;},random:function(){const a=1664525,c=1013904223,m=Math.pow(2,32);this.rngSeed=(a*this.rngSeed+c)%m;return this.rngSeed/m;},
+    // Tile type identifiers
+    TILE_GRASS:0,TILE_WATER:1,TILE_TREE:2,TILE_ROCK:3,
+    TILE_MANSION_EXT_WALL: 40, TILE_MANSION_EXT_DOOR: 41,
+    TILE_CASTLE_EXT_WALL: 42, TILE_CASTLE_EXT_DOOR: 43,
+    TILE_HOUSE_EXT_WALL: 44, TILE_HOUSE_EXT_DOOR: 45,
+    TILE_MANSION_FLOOR: 50, TILE_MANSION_WALL: 51, TILE_MANSION_DOOR: 52, TILE_MANSION_STAIRS: 53, TILE_MANSION_PAINTING: 56,
+    // Collectible and item identifiers
+    COLLECTIBLE_ENERGY_POTION:10,COLLECTIBLE_LIFE_POTION:11,COLLECTIBLE_GHOST_MODE:12,COLLECTIBLE_ORB:13,COLLECTIBLE_CASTLE_KEY:14,
+    WEAPON_DEFAULT:20,WEAPON_SHOTGUN:21,WEAPON_RAPID:22,WEAPON_CLUSTER:23,WEAPON_PLASMA:24,
+    // Shop item identifiers (string-based)
+    SHOP_HEALER:'SHOP_HEALER',SHOP_GHOST_MODE:'SHOP_GHOST_MODE',SHOP_AXE:'SHOP_AXE',SHOP_TURRET:'SHOP_TURRET',SHOP_SHOTGUN:'SHOP_SHOTGUN',SHOP_RAPID:'SHOP_RAPID',SHOP_CLUSTER:'SHOP_CLUSTER',SHOP_PLASMA:'SHOP_PLASMA',SHOP_FULL_MAP:'SHOP_FULL_MAP',SHOP_SPEED_POTION:'SHOP_SPEED_POTION',SHOP_WALL:'SHOP_WALL',SHOP_TELEPORT:'SHOP_TELEPORT',SHOP_BOMB:'SHOP_BOMB',
+    // Object to hold generated canvas assets
+    assets:{},
+    // Object to track keyboard state
+    keysPressed:{ArrowUp:false,ArrowDown:false,ArrowLeft:false,ArrowRight:false,Space:false,KeyQ:false,KeyE:false,KeyW:false,KeyA:false,KeyS:false,KeyD:false},
+
+    /**
+     * Helper function to create an offscreen canvas for a single asset.
+     * This pre-renders assets to canvases for better performance.
+     * @param {function} dF - The drawing function that takes (context, width, height) as arguments.
+     * @param {number} [w=TILE_SIZE] - The width of the canvas asset.
+     * @param {number} [h=TILE_SIZE] - The height of the canvas asset.
+     * @returns {HTMLCanvasElement} The canvas with the pre-rendered asset.
+     */
+    cA:function(dF,w,h){w=w||this.TILE_SIZE;h=h||this.TILE_SIZE;const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');x.imageSmoothingEnabled=false;dF(x,c.width,c.height);return c;},
+
+    /**
+     * Initializes the entire game. Called once on window load.
+     */
+    init:function(){
+        // Get canvas and context, set their dimensions
+        this.canvas=document.getElementById('gameCanvas');this.canvas.width=360;this.canvas.height=540;this.ctx=this.canvas.getContext('2d');this.ctx.imageSmoothingEnabled=false; // Crucial for pixel art
+        
+        // Setup intro screen scroll text
+        this.introScroll.x=this.canvas.width;
+        const t1="The ghosts have escaped! You must save all the ghosts. ";
+        const t2=" Find the ghosts and bring them back home! Watch out for the zombies and other monsters!";
+        this.introScroll.text = [t1, t2]; // Store texts
+        this.ctx.font="16px 'Courier New',monospace";
+        const t1W=this.ctx.measureText(t1).width;
+        const t2W=this.ctx.measureText(t2).width;
+        this.introScroll.textWidth=t1W+this.introScroll.ghostImageWidth+10+t2W;
+
+        // Set player and UI dimensions
+        this.player.width=this.TILE_SIZE;this.player.height=this.TILE_SIZE;
+        this.ui.viewportX=(this.canvas.width-this.VIEWPORT_WIDTH_PX)/2;
+        this.ui.viewportY=60;
+        const bW=120,bH=30;this.ui.restartButton={x:this.canvas.width-bW-10,y:(this.ui.viewportY/2)-(bH/2),width:bW,height:bH,text:"RESTART LVL"};
+        this.ui.itemBox.x=this.canvas.width/2-this.ui.itemBox.w/2;
+        this.ui.itemBox.y=this.canvas.height-this.ui.itemBox.h-10;
+        this.ui.leftArrow.x=this.ui.itemBox.x-this.ui.leftArrow.w-5;
+        this.ui.leftArrow.y=this.ui.itemBox.y;
+        this.ui.rightArrow.x=this.ui.itemBox.x+this.ui.itemBox.w+5;
+        this.ui.rightArrow.y=this.ui.itemBox.y;
+        this.ui.useButton.x=this.ui.rightArrow.x+this.ui.rightArrow.w+10;
+        this.ui.useButton.y=this.ui.itemBox.y;
+        
+        // Setup joystick position
+        this.joystick.baseX=this.joystick.baseRadius+20;
+        this.joystick.baseY=this.ui.itemBox.y+this.ui.itemBox.h/2;
+        this.joystick.knobX=this.joystick.baseX;
+        this.joystick.knobY=this.joystick.baseY;
+
+        // Define hardcoded interior map layouts
+        const W=this.TILE_MANSION_WALL,F=this.TILE_MANSION_FLOOR,D=this.TILE_MANSION_DOOR,S=this.TILE_MANSION_STAIRS,P=this.TILE_MANSION_PAINTING;
+        this.mansionMap = [
+            [W,W,W,W,W,W,W,W,W,W],[W,W,W,W,P,P,W,W,W,W],[W,W,W,W,P,P,W,W,W,W],[W,F,F,S,S,S,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],
+            [W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,W,W,W,F,F,W,W,W,W],[W,W,W,W,D,D,W,W,W,W],
+        ];
+        this.castleMap = [
+            [W,W,W,W,W,W,W,W,W,W],[W,F,F,F,F,F,F,F,F,W],[W,F,W,W,F,F,W,W,F,W],[W,F,W,F,F,F,F,W,F,W],[W,F,W,F,F,F,F,W,F,W],[W,F,W,F,W,W,F,W,F,W],
+            [W,F,F,F,W,F,F,F,F,W],[W,F,W,F,W,F,W,F,W,W],[W,F,W,F,F,F,F,F,F,W],[W,F,W,W,W,W,W,W,F,W],[W,F,F,F,F,F,F,F,F,W],[W,W,W,W,D,D,W,W,W,W],
+        ];
+        this.houseMap = [
+            [W,W,W,W,W,W,W,W,W,W],[W,F,F,F,W,F,F,F,F,W],[W,F,F,F,W,F,F,F,F,W],[W,F,F,F,W,F,F,F,F,W],[W,W,F,W,W,W,W,F,W,W],[W,F,F,F,F,F,F,F,F,W],
+            [W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,F,F,F,F,F,F,F,F,W],[W,W,W,W,D,D,W,W,W,W],
+        ];
+
+        // Generate all procedural art assets, add event listeners, and start the game loop
+        this.createPixelArtAssets();
+        this.addEventListeners();
+        this.setGameState(this.STATE_START_SCREEN);
+        this.lastTime=performance.now();
+        this.gameLoop();
+    },
+    /**
+     * Sets the current game state and handles any logic needed on state entry.
+     * @param {string} s - The new state to transition to.
+     */
+    setGameState:function(s){
+        this.currentState=s;
+        if(s===this.STATE_NEXT_LEVEL_TRANSITION) this.transitionTimer=1.0;
+    },
+    /**
+     * Starts a new game from the beginning.
+     */
+    startGame:function(){
+        this.level=1;
+        this.player.lives=3;
+        this.player.energy=this.player.maxEnergy;
+        this.player.orbs=1;
+        this.player.inventory=[this.WEAPON_DEFAULT];
+        this.player.currentItemIndex=0;
+        this.player.speed=120;
+        this.player.hasCastleKey=false;
+        this.player.hasShownCastleHint = false;
+        this.setupLevel(this.level);
+    },
+    /**
+     * Restarts the current level, preserving key player stats like lives and inventory.
+     */
+    restartCurrentLevel:function(){
+        // Store persistent player stats
+        const p=this.player;
+        const{lives,orbs,inventory,speed}=p;
+        // Setup the level again
+        this.setupLevel(this.level);
+        // Restore persistent stats
+        p.lives=lives;
+        p.energy=p.maxEnergy;
+        p.orbs=orbs;
+        p.inventory=inventory;
+        p.speed=speed;
+    },
+    /**
+     * Sets up a new level. This is the main function for procedural generation.
+     * @param {number} levelNumber - The level to generate.
+     */
+    setupLevel:function(levelNumber){
+        // Calculate dynamic map size based on the level, making it larger on higher levels.
+        const baseSize = 30;
+        const sizeIncrease = Math.floor((levelNumber - 1) / 5) * 10;
+        this.MAP_WIDTH_TILES = baseSize + sizeIncrease;
+        this.MAP_HEIGHT_TILES = baseSize + sizeIncrease;
+
+        this.level=levelNumber;
+        this.ghostsCollected=0;
+        
+        // Reset all level-specific arrays and states
+        this.skulls=[];this.zombies=[];this.projectiles=[];this.collectibles=[];this.bats=[];this.ghostParticles=[];this.ogres=[];this.gargoyles=[];this.slimes=[];this.turrets=[];this.skeletons=[];this.boneParticles=[];this.dragons=[];this.mansion=null;this.castle=null;this.house=null;this.walls=[];this.teleporters=[];this.bombs=[];this.mapRevealed=false;this.interiorCollectibles=[];this.scatterParticles=[];
+        this.player.hasCastleKey=false;
+        this.player.hasShownCastleHint = false;
+
+        // Adjust spawner timers based on level for increasing difficulty
+        this.animation.zombieSpawnTimer=Math.max(5,30/this.level);
+        this.animation.collectibleSpawnTimer=6;
+        this.animation.batSpawnTimer=15;
+        this.animation.slimeSpawnTimer=25;
+        this.animation.skeletonSpawnTimer=20;
+        
+        // --- START OF CHANGE ---
+        // Initialize timed spawners for new boss monsters, starting at specific levels.
+        // The timers are set to 0 for levels before the monster is introduced.
+        this.animation.ogreSpawnTimer = (this.level >= 5) ? (180 / this.level) : 0;
+        this.animation.gargoyleSpawnTimer = (this.level >= 6) ? (240 / this.level) : 0;
+        this.animation.dragonSpawnTimer = (this.level >= 7) ? (360 / this.level) : 0;
+        
+        // Procedurally generate the map
+        let initialSeed=Date.now()+Math.floor(Math.random()*1000000)+this.level;
+        this.setSeed(initialSeed);
+        let a=0,lS=0,mLP=0.30,iA=(this.MAP_WIDTH_TILES-2)*(this.MAP_HEIGHT_TILES-2),rA=iA*mLP;
+        // Attempt to generate a map with a large enough land area. Retry a few times if it fails.
+        do{
+            this.generateComplexMap();
+            lS=this.ensureConnectedLand();
+            a++;
+            // If the largest land area is too small, re-seed and try again.
+            if(lS<rA&&a<5){
+                let regenSeed=Date.now()+Math.floor(Math.random()*1000000)+this.level+a*100;
+                this.setSeed(regenSeed);
+            }
+        }while(lS<rA&&a<5);
+        // If all attempts fail, generate a simple fallback map to avoid an empty level.
+        if(lS<rA) this.generateSimpleFallbackMap();
+
+        // Place all game elements onto the generated map
+        this.placeObstacles();
+        this.placeSkulls();
+        this.placePlayer();
+        this.placeMansion();
+        this.placeCastle();
+        
+        // Place a dynamic number of houses based on the current level.
+        const numHouses = 1 + Math.floor((levelNumber - 1) / 5);
+        for (let i = 0; i < numHouses; i++) {
+            this.placeHouse();
+        }
+
+        this.placeGhosts();
+        this.placeZombies();
+
+        // One-time initial boss spawns for the level where they are first introduced, with a message.
+        if (levelNumber === 2) {
+            this.spawnOgre();
+            this.levelMessageText = "AN OGRE APPEARS!";
+            this.levelMessageTimer = 2.0;
+        }
+        if (levelNumber === 3) {
+            this.spawnGargoyle();
+            this.levelMessageText = "A GARGOYLE APPEARS!";
+            this.levelMessageTimer = 2.0;
+        }
+        if (levelNumber === 4) {
+            this.spawnDragon();
+            this.levelMessageText = "A DRAGON APPEARS!";
+            this.levelMessageTimer = 2.0;
+        }
+        // --- END OF CHANGE ---
+
+        // Reset player state for the new level
+        this.player.vx=0;this.player.vy=0;this.player.isMoving=false;this.player.invincibleTimer=0;this.player.isGhostMode=false;this.player.ghostModeTimer=0;this.player.teleportCooldown=0;this.player.eyeBlinkState='OPEN';this.player.eyeDrawStyle=0;this.player.eyeBlinkTimer=0;this.player.eyeBlinkRandomInterval=2+this.random()*3;
+        
+        // Finalize setup
+        this.updateCamera();
+        this.setGameState(this.STATE_PLAYING);
+    },
+    /**
+     * Generates a simple, open map as a fallback.
+     */
+    generateSimpleFallbackMap:function(){this.map=[];for(let y=0;y<this.MAP_HEIGHT_TILES;y++){this.map[y]=[];for(let x=0;x<this.MAP_WIDTH_TILES;x++){if(x===0||x===this.MAP_WIDTH_TILES-1||y===0||y===this.MAP_HEIGHT_TILES-1)this.map[y][x]=this.TILE_WATER;else this.map[y][x]=this.TILE_GRASS;}}},
+    /**
+     * Generates a complex map using a cellular automata algorithm.
+     */
+    generateComplexMap:function(){
+        // 1. Create initial random noise
+        this.map=[];const p=0.58;for(let y=0;y<this.MAP_HEIGHT_TILES;y++){this.map[y]=[];for(let x=0;x<this.MAP_WIDTH_TILES;x++){if(x===0||x===this.MAP_WIDTH_TILES-1||y===0||y===this.MAP_HEIGHT_TILES-1)this.map[y][x]=this.TILE_WATER;else this.map[y][x]=(this.random()<p)?this.TILE_GRASS:this.TILE_WATER;}}
+        // 2. Run automata iterations to smooth the noise into organic shapes
+        const iter=5;for(let i=0;i<iter;i++){let nM=[];for(let y=0;y<this.MAP_HEIGHT_TILES;y++){nM[y]=[];for(let x=0;x<this.MAP_WIDTH_TILES;x++){
+            if(x===0||x===this.MAP_WIDTH_TILES-1||y===0||y===this.MAP_HEIGHT_TILES-1){nM[y][x]=this.TILE_WATER;continue;}
+            // Count land neighbors
+            let lN=0;for(let dy=-1;dy<=1;dy++){for(let dx=-1;dx<=1;dx++){if(dx===0&&dy===0)continue;const nx=x+dx,ny=y+dy;if(nx>=0&&nx<this.MAP_WIDTH_TILES&&ny>=0&&ny<this.MAP_HEIGHT_TILES){if(this.map[ny][nx]===this.TILE_GRASS)lN++;}}}
+            // Apply rules: A land tile with < 4 neighbors becomes water. A water tile with >= 5 neighbors becomes land.
+            if(this.map[y][x]===this.TILE_GRASS)nM[y][x]=(lN>=4)?this.TILE_GRASS:this.TILE_WATER;else nM[y][x]=(lN>=5)?this.TILE_GRASS:this.TILE_WATER;
+        }}this.map=nM;}
+    },
+    /**
+     * Ensures the map is a single connected landmass by finding the largest area and removing all others.
+     * Uses a flood fill (breadth-first search) algorithm.
+     * @returns {number} The size of the largest connected area.
+     */
+    ensureConnectedLand:function(){
+        let v=[],lA=[],mA=0;for(let y=0;y<this.MAP_HEIGHT_TILES;y++){v[y]=[];for(let x=0;x<this.MAP_WIDTH_TILES;x++)v[y][x]=false;}
+        // Iterate through all tiles to find unvisited land tiles
+        for(let y=1;y<this.MAP_HEIGHT_TILES-1;y++){for(let x=1;x<this.MAP_WIDTH_TILES-1;x++){if(this.map[y][x]===this.TILE_GRASS&&!v[y][x]){
+            // Start a flood fill from this tile
+            let cA=[],q=[{x,y}];v[y][x]=true;cA.push({x,y});while(q.length>0){let c=q.shift();const n=[{dx:0,dy:1},{dx:0,dy:-1},{dx:1,dy:0},{dx:-1,dy:0}];for(const nn of n){const nx=c.x+nn.dx,ny=c.y+nn.dy;if(nx>0&&nx<this.MAP_WIDTH_TILES-1&&ny>0&&ny<this.MAP_HEIGHT_TILES-1&&this.map[ny][nx]===this.TILE_GRASS&&!v[ny][nx]){v[ny][nx]=true;cA.push({x:nx,y:ny});q.push({x:nx,y:ny});}}}
+            // If this area is the largest found so far, store it
+            if(cA.length>mA){mA=cA.length;lA=cA;}}}}
+        // Create a new map with only the largest land area
+        let nM=[];for(let y=0;y<this.MAP_HEIGHT_TILES;y++){nM[y]=[];for(let x=0;x<this.MAP_WIDTH_TILES;x++)nM[y][x]=this.TILE_WATER;}for(const c of lA)nM[c.y][c.x]=this.TILE_GRASS;this.map=nM;
+        // Re-enforce borders
+        for(let y=0;y<this.MAP_HEIGHT_TILES;y++){this.map[y][0]=this.TILE_WATER;this.map[y][this.MAP_WIDTH_TILES-1]=this.TILE_WATER;}for(let x=0;x<this.MAP_WIDTH_TILES;x++){this.map[0][x]=this.TILE_WATER;this.map[this.MAP_HEIGHT_TILES-1][x]=this.TILE_WATER;}
+        return mA;
+    },
+    /**
+     * Places trees and rocks randomly on grass tiles.
+     */
+    placeObstacles:function(){const tO=Math.floor(this.random()*((this.MAP_WIDTH_TILES*this.MAP_HEIGHT_TILES)/10))+Math.floor(this.MAP_WIDTH_TILES/1.5);let pC=0,a=0;while(pC<tO&&a<tO*10){const oX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-2))+1,oY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-2))+1;if(this.map[oY]&&this.map[oY][oX]===this.TILE_GRASS){this.map[oY][oX]=(this.random()<0.6)?this.TILE_TREE:this.TILE_ROCK;pC++;}a++;}},
+    /**
+     * Places decorative skulls randomly on grass tiles.
+     */
+    placeSkulls:function(){this.skulls=[];const fC=0.05;for(let y=1;y<this.MAP_HEIGHT_TILES-1;y++){for(let x=1;x<this.MAP_WIDTH_TILES-1;x++){if(this.map[y][x]===this.TILE_GRASS&&this.random()<fC){this.skulls.push({x:x,y:y});}}}},
+    /**
+     * Places the player on a valid grass tile.
+     */
+    placePlayer:function(){let p=false,a=0;while(!p&&a<3000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-2))+1,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-2))+1;if(this.map[tY]&&this.map[tY][tX]===this.TILE_GRASS){this.player.x=tX*this.TILE_SIZE+this.TILE_SIZE/2;this.player.y=tY*this.TILE_SIZE+this.TILE_SIZE/2;p=true;}a++;}if(!p){for(let y=1;y<this.MAP_HEIGHT_TILES-1&&!p;y++){for(let x=1;x<this.MAP_WIDTH_TILES-1&&!p;x++){if(this.map[y][x]===this.TILE_GRASS){this.player.x=x*this.TILE_SIZE+this.TILE_SIZE/2;this.player.y=y*this.TILE_SIZE+this.TILE_SIZE/2;p=true;}}}if(!p)this.player.x=(this.MAP_WIDTH_PX/2);this.player.y=(this.MAP_HEIGHT_PX/2);}},
+    /**
+     * Places a mansion structure on the map if conditions are met.
+     */
+    placeMansion: function(){if(this.level !== 1 && this.random() > 0.4) return;let placed=false;for(let attempt=0;attempt<100&&!placed;attempt++){const x=Math.floor(this.random()*(this.MAP_WIDTH_TILES-5))+2,y=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-5))+2;const pTileX=Math.floor(this.player.x/this.TILE_SIZE),pTileY=Math.floor(this.player.y/this.TILE_SIZE);if(Math.hypot(x-pTileX,y-pTileY)<10)continue;let valid=true;for(let dy=0;dy<3;dy++){for(let dx=0;dx<3;dx++){if(this.getTileTypeAt(x+dx,y+dy)!==this.TILE_GRASS){valid=false;break;}}if(!valid)break;}if(valid){this.mansion={x:x,y:y};for(let i=this.skulls.length-1;i>=0;i--){const skull=this.skulls[i];if(skull.x>=x&&skull.x<x+3&&skull.y>=y&&skull.y<y+3){this.skulls.splice(i,1);}}for(let dy=0;dy<3;dy++){for(let dx=0;dx<3;dx++){if(dx===1&&dy===2){this.map[y+dy][x+dx]=this.TILE_MANSION_EXT_DOOR;}else{this.map[y+dy][x+dx]=this.TILE_MANSION_EXT_WALL;}}}placed=true;
+            // Place collectibles inside the mansion
+            const mansionFloors=[];for(let my=0;my<this.mansionMap.length;my++){for(let mx=0;mx<this.mansionMap[0].length;mx++){if(this.mansionMap[my][mx]===this.TILE_MANSION_FLOOR){mansionFloors.push({x:mx,y:my});}}}
+            if(mansionFloors.length > 0) { const randIndex = Math.floor(this.random() * mansionFloors.length); const pos = mansionFloors.splice(randIndex, 1)[0]; this.interiorCollectibles.push({ x: pos.x, y: pos.y, type: this.COLLECTIBLE_CASTLE_KEY, interiorType: 'mansion' }); }
+            if(this.random() < 0.5 && mansionFloors.length > 0) { const randIndex = Math.floor(this.random() * mansionFloors.length); const pos = mansionFloors.splice(randIndex, 1)[0]; this.interiorCollectibles.push({ x: pos.x, y: pos.y, type: this.COLLECTIBLE_ENERGY_POTION, interiorType: 'mansion' }); }
+            const numOrbs=1+Math.floor(this.random()*2);for(let i=0;i<numOrbs&&mansionFloors.length>0;i++){const randIndex=Math.floor(this.random()*mansionFloors.length);const pos=mansionFloors.splice(randIndex,1)[0];this.interiorCollectibles.push({x:pos.x,y:pos.y,type:this.COLLECTIBLE_ORB,interiorType:'mansion'});}}}},
+    /**
+     * Places a castle structure on the map if a mansion exists.
+     */
+    placeCastle: function(){if(!this.mansion || this.random()>0.5)return;let placed=false;for(let attempt=0;attempt<100&&!placed;attempt++){const x=Math.floor(this.random()*(this.MAP_WIDTH_TILES-6))+2,y=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-6))+2;const pTileX=Math.floor(this.player.x/this.TILE_SIZE),pTileY=Math.floor(this.player.y/this.TILE_SIZE);if(Math.hypot(x-pTileX,y-pTileY)<12)continue;let valid=true;for(let dy=0;dy<4;dy++){for(let dx=0;dx<4;dx++){if(this.getTileTypeAt(x+dx,y+dy)!==this.TILE_GRASS){valid=false;break;}}if(!valid)break;}if(valid){this.castle={x:x,y:y};for(let i=this.skulls.length-1;i>=0;i--){const s=this.skulls[i];if(s.x>=x&&s.x<x+4&&s.y>=y&&s.y<y+4)this.skulls.splice(i,1);}for(let dy=0;dy<4;dy++){for(let dx=0;dx<4;dx++){if(dx>=1&&dx<=2&&dy===3){this.map[y+dy][x+dx]=this.TILE_CASTLE_EXT_DOOR;}else{this.map[y+dy][x+dx]=this.TILE_CASTLE_EXT_WALL;}}}placed=true;
+            // Place collectibles inside the castle
+            const castleFloors=[];for(let my=0;my<this.castleMap.length;my++){for(let mx=0;mx<this.castleMap[0].length;mx++){if(this.castleMap[my][mx]===this.TILE_MANSION_FLOOR){castleFloors.push({x:mx,y:my});}}}
+            if (castleFloors.length > 0) { const randIndex = Math.floor(this.random() * castleFloors.length); const pos = castleFloors.splice(randIndex, 1)[0]; this.interiorCollectibles.push({ x: pos.x, y: pos.y, type: this.COLLECTIBLE_LIFE_POTION, interiorType: 'castle' }); }
+            if (castleFloors.length > 0 && !this.player.inventory.includes(this.WEAPON_PLASMA)) { const randIndex = Math.floor(this.random() * castleFloors.length); const pos = castleFloors.splice(randIndex, 1)[0]; this.interiorCollectibles.push({ x: pos.x, y: pos.y, type: this.WEAPON_PLASMA, interiorType: 'castle' }); }
+            const numOrbs=1+Math.floor(this.random()*2);for(let i=0;i<numOrbs&&castleFloors.length>0;i++){const randIndex=Math.floor(this.random()*castleFloors.length);const pos=castleFloors.splice(randIndex,1)[0];this.interiorCollectibles.push({x:pos.x,y:pos.y,type:this.COLLECTIBLE_ORB,interiorType:'castle'});}}}},
+    /**
+     * Places a house structure on the map.
+     */
+    placeHouse: function(){if(this.random()>0.7)return;let placed=false;for(let attempt=0;attempt<100&&!placed;attempt++){const x=Math.floor(this.random()*(this.MAP_WIDTH_TILES-4))+2,y=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-4))+2;const pTileX=Math.floor(this.player.x/this.TILE_SIZE),pTileY=Math.floor(this.player.y/this.TILE_SIZE);if(Math.hypot(x-pTileX,y-pTileY)<8)continue;let valid=true;for(let dy=0;dy<2;dy++){for(let dx=0;dx<2;dx++){if(this.getTileTypeAt(x+dx,y+dy)!==this.TILE_GRASS){valid=false;break;}}if(!valid)break;}if(valid){this.house={x:x,y:y};for(let i=this.skulls.length-1;i>=0;i--){const s=this.skulls[i];if(s.x>=x&&s.x<x+2&&s.y>=y&&s.y<y+2)this.skulls.splice(i,1);}for(let dy=0;dy<2;dy++){for(let dx=0;dx<2;dx++){if(dx===0&&dy===1){this.map[y+dy][x+dx]=this.TILE_HOUSE_EXT_DOOR;}else{this.map[y+dy][x+dx]=this.TILE_HOUSE_EXT_WALL;}}}placed=true;
+            // Place collectibles inside the house
+            const houseFloors=[];for(let hy=0;hy<this.houseMap.length;hy++){for(let hx=0;hx<this.houseMap[0].length;hx++){if(this.houseMap[hy][hx]===this.TILE_MANSION_FLOOR){houseFloors.push({x:hx,y:hy});}}}
+            if(this.random() < 0.4 && houseFloors.length > 0) { const randIndex = Math.floor(this.random() * houseFloors.length); const pos = houseFloors.splice(randIndex, 1)[0]; this.interiorCollectibles.push({ x: pos.x, y: pos.y, type: this.COLLECTIBLE_ENERGY_POTION, interiorType: 'house' }); }
+            if(this.random()<0.5&&houseFloors.length>0){
+                const potentialItems=[this.WEAPON_SHOTGUN,this.WEAPON_RAPID,this.WEAPON_CLUSTER,this.SHOP_FULL_MAP].filter(item=>{
+                    if(typeof item==='number')return !this.player.inventory.includes(item);if(item===this.SHOP_FULL_MAP)return !this.mapRevealed;return true;});
+                if(potentialItems.length>0){const itemType=potentialItems[Math.floor(this.random()*potentialItems.length)];const randIndex=Math.floor(this.random()*houseFloors.length);const pos=houseFloors.splice(randIndex,1)[0];this.interiorCollectibles.push({x:pos.x,y:pos.y,type:itemType,interiorType:'house'});}}}}},
+    /**
+     * Places the required number of ghosts for the level on valid grass tiles.
+     */
+    placeGhosts:function(){this.ghosts=[];let pC=0,a=0;const pSX=Math.floor(this.player.x/this.TILE_SIZE),pSY=Math.floor(this.player.y/this.TILE_SIZE);while(pC<this.GHOSTS_PER_LEVEL&&a<4000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-2))+1,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-2))+1;if(this.map[tY]&&this.map[tY][tX]===this.TILE_GRASS&&(tX!==pSX||tY!==pSY)){let e=false;for(const c of this.ghosts)if(c.x===tX&&c.y===tY){e=true;break;}if(!e){let fH=false;for(const d of this.skulls)if(d.x===tX&&d.y===tY){fH=true;break;}if(!fH){this.ghosts.push({x:tX,y:tY,collected:false});pC++;}}}a++;}if(pC<this.GHOSTS_PER_LEVEL){for(let y=1;y<this.MAP_HEIGHT_TILES-1&&pC<this.GHOSTS_PER_LEVEL;y++){for(let x=1;x<this.MAP_WIDTH_TILES-1&&pC<this.GHOSTS_PER_LEVEL;x++){if(this.map[y][x]===this.TILE_GRASS&&(x!==pSX||y!==pSY)){let e=false;for(const c of this.ghosts)if(c.x===x&&c.y===y){e=true;break;}if(!e){let fH=false;for(const d of this.skulls)if(d.x===x&&d.y===y){fH=true;break;}if(!fH){this.ghosts.push({x:x,y:y,collected:false});pC++;}}}}}}},
+    /**
+     * Places the initial zombies for the first level.
+     */
+    placeZombies:function(){this.zombies=[];const numZombies=this.level>1?0:2;for(let i=0;i<numZombies;i++)this.spawnOneZombie(true);},
+    /**
+     * Spawns a single zombie at a random valid location, usually away from the player.
+     * @param {boolean} [isInitialSpawn=false] - If true, zombie spawns instantly without an animation.
+     */
+    spawnOneZombie: function(isInitialSpawn=false){let pC=0,a=0;const pSX=Math.floor(this.player.x/this.TILE_SIZE),pSY=Math.floor(this.player.y/this.TILE_SIZE);while(pC<1&&a<1000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-2))+1,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-2))+1;const distToPlayer=Math.hypot(tX-pSX,tY-pSY);if(this.map[tY]&&this.map[tY][tX]===this.TILE_GRASS&&distToPlayer>6){let occupied=false;for(const z of this.zombies){if(Math.floor(z.x/this.TILE_SIZE)===tX&&Math.floor(z.y/this.TILE_SIZE)===tY){occupied=true;break;}}if(!occupied){this.zombies.push({health:1, x:tX*this.TILE_SIZE+this.TILE_SIZE/2,y:tY*this.TILE_SIZE+this.TILE_SIZE/2,width:32,height:32,speed:40+this.random()*20,vx:0,vy:0,walkAnimTimer:0,walkFrame:0,eyeDrawStyle:0,eyeBlinkState:'OPEN',eyeBlinkTimer:0,eyeBlinkRandomInterval:3+this.random()*2,moveTimer:1+this.random()*2,isDying:false,deathTimer:0,isSpawning:!isInitialSpawn,spawnTimer: isInitialSpawn?0:this.animation.zombieSpawnEffectDuration, isAttacking: false, attackTimer:0, attackCooldown: 0});pC++;}}a++;}},
+    /**
+     * Spawns a random collectible item on a valid grass tile.
+     */
+    spawnCollectible: function(){let pC=0,a=0;while(pC<1&&a<1000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-2))+1,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-2))+1;if(this.map[tY]&&this.map[tY][tX]===this.TILE_GRASS){let type;const rand=this.random();
+        if(rand<0.8)type=this.COLLECTIBLE_ORB;
+        else if(rand<0.9)type=this.COLLECTIBLE_ENERGY_POTION;else if(rand<0.95)type=this.COLLECTIBLE_GHOST_MODE;else type=this.COLLECTIBLE_LIFE_POTION;
+    if(type){let collectible={x:tX,y:tY,type:type,collected:false};
+    this.collectibles.push(collectible);pC++;}}a++;}},
+    /**
+     * Spawns a bat enemy from off-screen.
+     */
+    spawnBat: function(){const side=Math.floor(this.random()*4);let x,y;if(side===0){x=this.random()*this.MAP_WIDTH_PX;y=-this.TILE_SIZE;}else if(side===1){x=this.random()*this.MAP_WIDTH_PX;y=this.MAP_HEIGHT_PX+this.TILE_SIZE;}else if(side===2){x=-this.TILE_SIZE;y=this.random()*this.MAP_HEIGHT_PX;}else{x=this.MAP_WIDTH_PX+this.TILE_SIZE;y=this.random()*this.MAP_HEIGHT_PX;}this.bats.push({x:x,y:y,width:24,height:16,speed:90+this.random()*30,vx:0,vy:0});},
+    /**
+     * Spawns an Ogre boss monster at a random valid location away from the player.
+     */
+    spawnOgre: function(){let pC=0,a=0;const pSX=Math.floor(this.player.x/this.TILE_SIZE),pSY=Math.floor(this.player.y/this.TILE_SIZE);while(pC<1&&a<1000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-4))+2,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-4))+2;const distToPlayer=Math.hypot(tX-pSX,tY-pSY);if(this.map[tY]&&this.map[tY][tX]===this.TILE_GRASS&&distToPlayer>8){this.ogres.push({health:3,x:tX*this.TILE_SIZE+this.TILE_SIZE/2,y:tY*this.TILE_SIZE+this.TILE_SIZE/2,width:48,height:48,speed:30,vx:0,vy:0,maxHealth:3,animTimer:0,animFrame:0,isAttacking:false,attackTimer:0,isDying:false,deathTimer:0,invincibleTimer:0});pC++;}a++;}},
+    /**
+     * Spawns a Gargoyle boss monster at a random valid location away from the player.
+     */
+    spawnGargoyle: function(){let pC=0,a=0;const pSX=Math.floor(this.player.x/this.TILE_SIZE),pSY=Math.floor(this.player.y/this.TILE_SIZE);while(pC<1&&a<1000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-4))+2,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-4))+2;const distToPlayer=Math.hypot(tX-pSX,tY-pSY);if(this.map[tY]&&this.map[tY][tX]===this.TILE_GRASS&&distToPlayer>8){this.gargoyles.push({health:10,x:tX*this.TILE_SIZE+this.TILE_SIZE/2,y:tY*this.TILE_SIZE+this.TILE_SIZE/2,width:48,height:48,speed:45,vx:0,vy:0,maxHealth:10,animTimer:0,animFrame:0,isAttacking:false,attackTimer:0,isDying:false,deathTimer:0,invincibleTimer:0});pC++;}a++;}},
+    /**
+     * Spawns a Dragon boss monster at a random valid location away from the player.
+     */
+    spawnDragon: function(){let pC=0,a=0;const pSX=Math.floor(this.player.x/this.TILE_SIZE),pSY=Math.floor(this.player.y/this.TILE_SIZE);while(pC<1&&a<1000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-6))+3,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-6))+3;const distToPlayer=Math.hypot(tX-pSX,tY-pSY);if(distToPlayer>10){this.dragons.push({health:30,x:tX*this.TILE_SIZE+this.TILE_SIZE/2,y:tY*this.TILE_SIZE+this.TILE_SIZE/2,width:64,height:64,speed:40,vx:0,vy:0,maxHealth:30,animTimer:0,animFrame:0,shootCooldown:3.0,isDying:false,deathTimer:0,invincibleTimer:0});pC++;}a++;}},
+    /**
+     * Spawns a friendly slime ally near the player.
+     */
+    spawnSlime: function(){if(this.slimes.length>0)return;const x=this.player.x+(this.random()<0.5?-1:1)*this.TILE_SIZE;const y=this.player.y+(this.random()<0.5?-1:1)*this.TILE_SIZE;this.slimes.push({x:x,y:y,width:24,height:24,speed:100,hits:2,isDying:false,deathTimer:0});this.allyMessageText="MY FRIEND!";this.allyMessageTimer=2.0;},
+    /**
+     * Spawns a skeleton enemy that digs up from the ground.
+     */
+    spawnSkeleton: function() {if(this.skeletons.length>1)return;let pC=0,a=0;const pSX=Math.floor(this.player.x/this.TILE_SIZE),pSY=Math.floor(this.player.y/this.TILE_SIZE);while(pC<1&&a<1000){const tX=Math.floor(this.random()*(this.MAP_WIDTH_TILES-2))+1,tY=Math.floor(this.random()*(this.MAP_HEIGHT_TILES-2))+1;const distToPlayer=Math.hypot(tX-pSX,tY-pSY);if(this.map[tY]&&this.map[tY][tX]===this.TILE_GRASS&&distToPlayer>4&&distToPlayer<10){this.skeletons.push({x:tX*this.TILE_SIZE+this.TILE_SIZE/2,y:tY*this.TILE_SIZE+this.TILE_SIZE/2,width:32,height:32,speed:70,vx:0,vy:0,health:2,state:'dig_up',animTimer:1.0,stateTimer:0,isDying:false,walkAnimTimer:0,walkFrame:0});pC++;}a++;}},
+
+    /**
+     * Generates all visual assets for the game programmatically as offscreen canvases.
+     * This avoids having to load external image files and is great for small, self-contained games.
+     */
+    createPixelArtAssets: function() {
+        // --- TERRAIN ASSETS ---
+        this.assets.grass=this.cA((ctx,w,h)=>{ctx.fillStyle='#2c3e50';ctx.fillRect(0,0,w,h);ctx.fillStyle='#34495e';for(let i=0;i<15;i++)ctx.fillRect(this.random()*w,this.random()*h,2,2);});
+        this.assets.waterFrames=[];const waterBaseColor='#8e44ad',waterHighlightColor='#9b59b6',waterShadowColor='#6c3483';for(let frame=0;frame<4;frame++){this.assets.waterFrames.push(this.cA((ctx,w,h)=>{ctx.fillStyle=waterBaseColor;ctx.fillRect(0,0,w,h);const frameOffset=(frame*4);for(const yPos of [6,15,24]){let currentX=-(frameOffset%(10));while(currentX<w){ctx.fillStyle=waterHighlightColor;ctx.fillRect(currentX,yPos+[0,1,0,-1][frame],6,3);ctx.fillStyle=waterShadowColor;ctx.fillRect(currentX+1,yPos+3+[0,1,0,-1][frame],4,1);currentX+=10;}}}))}
+        this.assets.tree=this.cA((ctx,w,h)=>{ctx.drawImage(this.assets.grass,0,0);ctx.fillStyle='#5d4037';ctx.fillRect(w/2-3,h*0.4,6,h*0.6);ctx.strokeStyle='#5d4037';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(w/2,h*0.7);ctx.lineTo(w*0.2,h*0.4);ctx.lineTo(w*0.1,h*0.5);ctx.moveTo(w/2,h*0.6);ctx.lineTo(w*0.8,h*0.3);ctx.lineTo(w*0.9,h*0.4);ctx.moveTo(w/2,h*0.4);ctx.lineTo(w*0.4,h*0.1);ctx.stroke();});
+        this.assets.rock=this.cA((ctx,w,h)=>{ctx.drawImage(this.assets.grass,0,0);ctx.fillStyle='#8d8d8d';ctx.beginPath();ctx.moveTo(w*0.2,h*0.8);ctx.lineTo(w*0.15,h*0.5);ctx.lineTo(w*0.4,h*0.25);ctx.lineTo(w*0.75,h*0.3);ctx.lineTo(w*0.85,h*0.6);ctx.lineTo(w*0.6,h*0.85);ctx.closePath();ctx.fill();ctx.fillStyle='#ababab';ctx.fillRect(w*0.4,h*0.3,w*0.15,h*0.1);ctx.fillStyle='#6b6b6b';ctx.fillRect(w*0.3,h*0.7,w*0.3,h*0.1);});
+        
+        // --- OBJECTS AND COLLECTIBLES ---
+        this.assets.ghostFrames=[];for(let i=0;i<8;i++){this.assets.ghostFrames.push(this.cA((ctx,w,h)=>{const bob=Math.sin(i/8*Math.PI*2)*2;const squish=Math.cos(i/8*Math.PI*2)*0.05;ctx.shadowColor='#00ffff';ctx.shadowBlur=10;ctx.fillStyle='#00ffff';ctx.beginPath();ctx.moveTo(w*(0.3-squish),h+bob);ctx.lineTo(w*(0.2-squish),h*0.5+bob);ctx.arc(w*0.5,h*0.5+bob,w*(0.3+squish),Math.PI,0);ctx.lineTo(w*(0.8+squish),h*0.5+bob);ctx.lineTo(w*(0.7+squish),h+bob);ctx.lineTo(w*0.5,h*0.8+bob);ctx.closePath();ctx.fill();ctx.shadowBlur=0;ctx.fillStyle='#000';ctx.fillRect(w*0.4,h*0.5+bob,3,3);ctx.fillRect(w*0.6,h*0.5+bob,3,3);}));}
+        this.assets.skull=this.cA((ctx,w,h)=>{ctx.drawImage(this.assets.grass,0,0);ctx.fillStyle='#e0e0e0';const sX=w*0.35,sY=h*0.5,sW=w*0.3,sH=w*0.4;ctx.beginPath();ctx.arc(sX+sW/2,sY,sW/2,Math.PI,0);ctx.rect(sX,sY,sW,sH*0.6);ctx.fill();ctx.fillStyle='#000';ctx.fillRect(sX+sW*0.2,sY-sH*0.1,2,2);ctx.fillRect(sX+sW*0.8-2,sY-sH*0.1,2,2);});
+        this.assets.lightning=this.cA((ctx,w,h)=>{ctx.strokeStyle='#FFFF00';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(w*0.5,0);ctx.lineTo(w*0.4,h*0.3);ctx.lineTo(w*0.6,h*0.6);ctx.lineTo(w*0.5,h);ctx.stroke();});
+        this.assets.plasmaRing=this.cA((ctx,w,h)=>{ctx.strokeStyle='#03A9F4';ctx.lineWidth=3;ctx.beginPath();ctx.arc(w/2,h/2,w*0.3,0,Math.PI*2);ctx.stroke();},16,16);
+        this.assets.potionEnergy=this.cA((ctx,w,h)=>{ctx.fillStyle='#4a90e2';ctx.fillRect(w*0.3,h*0.3,w*0.4,h*0.6);ctx.fillRect(w*0.2,h*0.2,w*0.6,h*0.1);ctx.fillStyle='#7bc4f8';ctx.fillRect(w*0.35,h*0.35,w*0.1,h*0.4);});
+        this.assets.potionLife=this.cA((ctx,w,h)=>{ctx.fillStyle='#8e44ad';ctx.fillRect(w*0.3,h*0.3,w*0.4,h*0.6);ctx.fillRect(w*0.2,h*0.2,w*0.6,h*0.1);ctx.fillStyle='#9b59b6';ctx.fillRect(w*0.35,h*0.35,w*0.1,h*0.4);});
+        this.assets.ghostModePowerup=this.cA((ctx,w,h)=>{ctx.globalAlpha=0.7;ctx.fillStyle='#FFFFFF';ctx.beginPath();ctx.arc(w/2,h*0.3,w*0.2,Math.PI,0);ctx.rect(w*0.3,h*0.3,w*0.4,w*0.4);ctx.fill();ctx.globalAlpha=1.0;});
+        this.assets.orb=this.cA((ctx,w,h)=>{ctx.shadowColor='#FFFF00';ctx.shadowBlur=4;ctx.fillStyle='#FFFF00';ctx.beginPath();ctx.arc(w/2,h/2,w*0.4,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;},16,16);
+        this.assets.castle_key=this.cA((ctx,w,h)=>{ctx.fillStyle='#FFD700';ctx.beginPath();ctx.arc(w*0.7,h*0.3,w*0.2,0,Math.PI*2);ctx.fill();ctx.fillRect(w*0.2,h*0.4,w*0.6,w*0.15);ctx.fillRect(w*0.3,h*0.55,w*0.1,w*0.2);ctx.fillRect(w*0.5,h*0.55,w*0.1,w*0.2);});
+        this.assets.gunshotgun=this.cA((ctx,w,h)=>{ctx.fillStyle='#8B4513';ctx.fillRect(w*0.2,h*0.4,w*0.6,h*0.2);ctx.fillStyle='#C0C0C0';ctx.fillRect(w*0.5,h*0.3,w*0.4,h*0.1);ctx.fillRect(w*0.5,h*0.6,w*0.4,h*0.1);});
+        this.assets.gunrapid=this.cA((ctx,w,h)=>{ctx.fillStyle='#4a4a4a';ctx.fillRect(w*0.2,h*0.4,w*0.7,h*0.2);ctx.fillStyle='#787878';for(let i=0;i<3;i++)ctx.fillRect(w*0.2+i*w*0.25,h*0.25,w*0.1,h*0.5);});
+        this.assets.guncluster=this.cA((ctx,w,h)=>{ctx.fillStyle='#4CAF50';ctx.beginPath();ctx.arc(w*0.4,h*0.5,w*0.25,0,Math.PI*2);ctx.fill();ctx.fillStyle='#8BC34A';ctx.fillRect(w*0.6,h*0.4,w*0.3,h*0.2);});
+        this.assets.gunplasma=this.cA((ctx,w,h)=>{ctx.fillStyle='#03A9F4';ctx.beginPath();ctx.arc(w*0.5,h*0.5,w*0.3,0,Math.PI*2);ctx.fill();ctx.fillStyle='#81D4FA';ctx.fillRect(w*0.2,h*0.45,w*0.6,h*0.1);});
+        this.assets.axe=this.cA((ctx,w,h)=>{ctx.fillStyle='#C0C0C0';ctx.beginPath();ctx.moveTo(w*0.2,h*0.2);ctx.lineTo(w*0.8,h*0.2);ctx.lineTo(w*0.5,h*0.5);ctx.closePath();ctx.fill();ctx.fillStyle='#8B4513';ctx.fillRect(w*0.4,h*0.4,w*0.2,h*0.4);});
+        this.assets.turret=this.cA((ctx,w,h)=>{ctx.fillStyle='#787878';ctx.fillRect(w*0.2,h*0.4,w*0.6,h*0.4);ctx.fillStyle='#4a4a4a';ctx.fillRect(0,h*0.8,w,h*0.2);ctx.fillRect(w*0.3,h*0.2,w*0.4,h*0.2);});
+        this.assets.batFrames=[];this.assets.batFrames.push(this.cA((ctx,w,h)=>{ctx.fillStyle='#444';ctx.beginPath();ctx.moveTo(w*0.2,h*0.5);ctx.lineTo(w*0.5,h*0.3);ctx.lineTo(w*0.8,h*0.5);ctx.lineTo(w*0.5,h*0.7);ctx.closePath();ctx.fill();}));this.assets.batFrames.push(this.cA((ctx,w,h)=>{ctx.fillStyle='#444';ctx.beginPath();ctx.moveTo(w*0.1,h*0.3);ctx.lineTo(w*0.5,h*0.5);ctx.lineTo(w*0.9,h*0.3);ctx.lineTo(w*0.5,h*0.7);ctx.closePath();ctx.fill();}));
+        this.assets.slimeFrames=[];for(let i=0;i<4;i++){this.assets.slimeFrames.push(this.cA((ctx,w,h)=>{ctx.globalAlpha=0.7;ctx.fillStyle='green';const yOff=Math.sin(i/4*Math.PI*2)*h*0.1;const xSquish=Math.cos(i/4*Math.PI*2)*w*0.1;ctx.beginPath();ctx.moveTo(w*0.1+xSquish,h);ctx.quadraticCurveTo(w/2,h*0.2+yOff,w*0.9-xSquish,h);ctx.closePath();ctx.fill();ctx.globalAlpha=1.0;ctx.fillStyle='yellow';ctx.fillRect(w*0.3,h*0.5+yOff,w*0.1,w*0.1);ctx.fillRect(w*0.6,h*0.5+yOff,w*0.1,w*0.1);},24,24));}
+        
+        // --- BUILDINGS AND INTERIORS ---
+        this.assets.mansion=this.cA((ctx,w,h)=>{ctx.fillStyle='#2c3e50';for(let r=0;r<3;r++){for(let c=0;c<3;c++){ctx.drawImage(this.assets.grass,c*32,r*32);}}ctx.fillStyle='#1a1a1a';ctx.fillRect(2,2,w-4,h-4);ctx.fillStyle='#2a2a2a';ctx.beginPath();ctx.moveTo(w/2,h*0.1);ctx.lineTo(2,h*0.4);ctx.lineTo(w-2,h*0.4);ctx.closePath();ctx.fill();ctx.fillStyle='#000';ctx.fillRect(10,h-34,20,32);ctx.fillStyle='#444';ctx.fillRect(16,h-34,8,16);ctx.fillStyle='yellow';ctx.fillRect(12,18,12,10);ctx.fillRect(w-24,18,12,10);ctx.fillStyle='#444';ctx.fillRect(w-54,50,16,12);},96,96);
+        this.assets.castle=this.cA((ctx,w,h)=>{const mainColor='#6c757d',shadowColor='#495057',highlightColor='#adb5bd';ctx.fillStyle=mainColor;ctx.fillRect(0,0,w,h);ctx.fillStyle=shadowColor;for(let x=0;x<w;x+=16){ctx.fillRect(x,0,8,8);ctx.fillRect(x+8,h-8,8,8);}ctx.fillRect(0,0,8,h);ctx.fillRect(w-8,0,8,h);ctx.fillStyle=highlightColor;ctx.fillRect(w*0.1,h*0.1,w*0.8,h*0.8);ctx.fillStyle=mainColor;ctx.fillRect(w*0.15,h*0.15,w*0.7,h*0.7);ctx.fillStyle=shadowColor;ctx.fillRect(w*0.25,h-32,w*0.5,24);ctx.fillStyle=mainColor;ctx.fillRect(w*0.3,h-28,w*0.4,20);},128,128);
+        this.assets.house=this.cA((ctx,w,h)=>{ctx.fillStyle='#8B4513';ctx.fillRect(0,0,w,h);ctx.fillStyle='#A0522D';ctx.beginPath();ctx.moveTo(w/2,h*0.1);ctx.lineTo(0,h*0.4);ctx.lineTo(w,h*0.4);ctx.closePath();ctx.fill();ctx.fillStyle='#5D4037';ctx.fillRect(w*0.2,h-32,w*0.25,30);},64,64);
+        this.assets.mansion_floor=this.cA((ctx,w,h)=>{ctx.fillStyle='#6B4F35';ctx.fillRect(0,0,w,h);ctx.fillStyle='#5A412B';for(let y=0;y<h;y+=8)ctx.fillRect(0,y,w,2);});
+        this.assets.mansion_wall=this.cA((ctx,w,h)=>{ctx.fillStyle='#4a4a4a';ctx.fillRect(0,0,w,h);ctx.fillStyle='#3a3a3a';for(let y=0;y<h;y+=8){for(let x=(y/8%2)*8;x<w;x+=16)ctx.fillRect(x,y,8,8);}});
+        this.assets.mansion_door=this.cA((ctx,w,h)=>{ctx.fillStyle='#8B4513';ctx.fillRect(0,0,w,h);ctx.fillStyle='#A0522D';ctx.fillRect(w*0.1,h*0.1,w*0.8,h*0.8);ctx.fillStyle='#FFD700';ctx.beginPath();ctx.arc(w*0.75,h*0.5,w*0.05,0,Math.PI*2);ctx.fill();});
+        this.assets.mansion_stairs=this.cA((ctx,w,h)=>{ctx.fillStyle='#654321';ctx.fillRect(0,0,w,h);for(let y=0;y<h;y+=8){ctx.fillStyle='rgba(0,0,0,0.2)';ctx.fillRect(0,y,w,2);}});
+        this.assets.mansion_painting=this.cA((ctx,w,h)=>{ctx.fillStyle='#8B4513';ctx.fillRect(0,0,w,h);ctx.fillStyle='#ecf0f1';ctx.fillRect(w*0.1,h*0.1,w*0.8,h*0.8);ctx.fillStyle='#e74c3c';ctx.beginPath();ctx.arc(w*0.5,h*0.4,w*0.2,0,Math.PI);ctx.fill();ctx.fillStyle='#2c3e50';ctx.fillRect(w*0.3,h*0.6,w*0.4,h*0.2);}, 64, 64);
+        this.assets.fireball=this.cA((ctx,w,h)=>{ctx.fillStyle='orange';ctx.beginPath();ctx.arc(w/2,h/2,w*0.45,0,Math.PI*2);ctx.fill();ctx.fillStyle='yellow';ctx.beginPath();ctx.arc(w/2,h/2,w*0.2,0,Math.PI*2);ctx.fill();},16,16);
+        
+        // --- SHOP AND UI ASSETS ---
+        this.assets.shop_map=this.cA((ctx,w,h)=>{ctx.fillStyle='#D2B48C';ctx.fillRect(w*0.1,h*0.1,w*0.8,h*0.8);ctx.strokeStyle='#8B4513';ctx.lineWidth=2;ctx.strokeRect(w*0.1,h*0.1,w*0.8,h*0.8);ctx.fillStyle='#3498DB';ctx.fillRect(w*0.2,h*0.2,w*0.3,h*0.3);ctx.fillStyle='#2ECC71';ctx.fillRect(w*0.5,h*0.5,w*0.4,h*0.4);});
+        this.assets.shop_speed_potion=this.cA((ctx,w,h)=>{ctx.fillStyle='#3498DB';ctx.beginPath();ctx.moveTo(w*0.3,h*0.9);ctx.lineTo(w*0.3,h*0.4);ctx.arcTo(w*0.3,h*0.2,w*0.5,h*0.2,w*0.2);ctx.arcTo(w*0.7,h*0.2,w*0.7,h*0.4,w*0.2);ctx.lineTo(w*0.7,h*0.9);ctx.closePath();ctx.fill();ctx.fillStyle='#FFFFFF';ctx.fillRect(w*0.4,h*0.5,w*0.2,2);ctx.fillRect(w*0.4,h*0.6,w*0.2,2);});
+        this.assets.shop_wall=this.cA((ctx,w,h)=>{ctx.fillStyle='#CD5C5C';for(let y=0;y<h;y+=h/4){for(let x=(y/(h/4)%2)*(w/2);x<w;x+=w)ctx.fillRect(x,y,w/2,h/4);}ctx.strokeStyle='#8B0000';ctx.lineWidth=2;ctx.strokeRect(0,0,w,h);});
+        this.assets.shop_teleport=this.cA((ctx,w,h)=>{const g=ctx.createRadialGradient(w/2,h/2,w*0.1,w/2,h/2,w*0.5);g.addColorStop(0,'#DA70D6');g.addColorStop(1,'#4B0082');ctx.fillStyle=g;ctx.beginPath();ctx.arc(w/2,h/2,w*0.45,0,Math.PI*2);ctx.fill();});
+        this.assets.bomb=this.cA((ctx,w,h)=>{ctx.fillStyle='#222';ctx.beginPath();ctx.arc(w/2,h/2,w*0.4,0,Math.PI*2);ctx.fill();ctx.fillStyle='#888';ctx.fillRect(w*0.45,h*0.1,w*0.1,h*0.2);ctx.strokeStyle='#ff0';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(w*0.5,h*0.2);ctx.lineTo(w*0.6,h*0.1);ctx.stroke();});
+        this.assets.player_wall=this.cA((ctx,w,h)=>{ctx.fillStyle='#A0522D';for(let y=0;y<h;y+=h/3){for(let x=(y/(h/3)%2)*(w/2);x<w;x+=w)ctx.fillRect(x,y,w/2,h/3);}ctx.strokeStyle='#8B4513';ctx.lineWidth=1;ctx.strokeRect(0,0,w,h);});
+        this.assets.teleporterFrames=[];for(let i=0;i<8;i++){this.assets.teleporterFrames.push(this.cA((ctx,w,h)=>{const g=ctx.createRadialGradient(w/2,h/2,w*0.1,w/2,h/2,w*0.5);const offset=i/8;g.addColorStop((0+offset)%1,'#DA70D6');g.addColorStop((0.5+offset)%1,'#9400D3');g.addColorStop((1+offset)%1,'#4B0082');ctx.fillStyle=g;ctx.beginPath();ctx.arc(w/2,h/2,w*0.45,0,Math.PI*2);ctx.fill();}));}
+
+        // --- CHARACTER DRAWING FUNCTIONS AND FRAMES ---
+        // A helper function to draw the reaper character, used to generate animation frames.
+        const drawReaper=(ctx,w,h,isMoving,walkF,idleF,eyeDrawStyle)=>{ctx.clearRect(0,0,w,h);let bYO=0,scytheRot=0;if(isMoving){bYO=(walkF%2===0)?0:-2;scytheRot=Math.sin(walkF/4*Math.PI*2)*0.1;}else{if(idleF%2!==0)bYO=-2;}ctx.save();ctx.translate(w/2,h*0.7);ctx.rotate(scytheRot);ctx.fillStyle='#6b6b6b';ctx.fillRect(-w*0.35,-h*0.4,3,h*0.8);ctx.fillStyle='#dcdcdc';ctx.beginPath();ctx.moveTo(-w*0.35,-h*0.4);ctx.quadraticCurveTo(w*0.1,-h*0.5,w*0.3,-h*0.2);ctx.lineTo(w*0.2,-h*0.1);ctx.closePath();ctx.fill();ctx.restore();const headY=4+bYO;ctx.fillStyle='#1a1a1a';ctx.beginPath();ctx.arc(w/2,headY+h*0.3,w*0.4,Math.PI,Math.PI*2);ctx.closePath();ctx.fill();ctx.fillStyle='#e0e0e0';ctx.beginPath();ctx.arc(w/2,headY+h*0.3,w*0.25,0,Math.PI*2);ctx.fill();ctx.fillRect(w/2-w*0.2,headY+h*0.4,w*0.4,h*0.1);const eyePosY=headY+h*0.25;ctx.fillStyle='#FF0000';if(eyeDrawStyle===0){ctx.fillRect(w/2-w*0.15,eyePosY,3,3);ctx.fillRect(w/2+w*0.15-3,eyePosY,3,3);}else if(eyeDrawStyle===1){ctx.fillRect(w/2-w*0.15,eyePosY+1,3,2);ctx.fillRect(w/2+w*0.15-3,eyePosY+1,3,2);}else if(eyeDrawStyle===2){ctx.fillRect(w/2-w*0.15,eyePosY+2,3,1);ctx.fillRect(w/2+w*0.15-3,eyePosY+2,3,1);}ctx.fillStyle='#1a1a1a';ctx.fillRect(w*0.35,headY+h*0.5,w*0.3,h*0.3);};
+        // A helper function to draw the zombie character.
+        const drawZombie=(ctx,w,h,walkF,eyeDrawStyle,isAttacking)=>{ctx.clearRect(0,0,w,h);let LdX=0,RdX=0,bYO=0,attackLunge=0;if(isAttacking){attackLunge=4;}if(walkF%2!==0)bYO=1;if(walkF===0){LdX=-3;RdX=3;}else if(walkF===2){LdX=3;RdX=-3;}const headY=2+bYO-attackLunge;ctx.fillStyle='#5f6e54';ctx.fillRect(w*0.15,headY,w*0.7,h*0.55);ctx.fillStyle='#000000';const eyePosY=headY+h*0.15;if(eyeDrawStyle===0){ctx.fillRect(w*0.3,eyePosY,4,5);ctx.fillRect(w*0.6,eyePosY,4,5);}else if(eyeDrawStyle===1){ctx.fillRect(w*0.3,eyePosY+1,4,3);ctx.fillRect(w*0.6,eyePosY+1,4,3);}else if(eyeDrawStyle===2){ctx.fillRect(w*0.3,eyePosY+2,4,1);ctx.fillRect(w*0.6,eyePosY+2,4,1);}ctx.fillStyle='#5a3d2b';ctx.fillRect(w*0.3,h*0.55+bYO-attackLunge,w*0.4,h*0.25);if(isAttacking){ctx.fillRect(w*0.1,h*0.4+bYO-attackLunge,w*0.2,h*0.15);ctx.fillRect(w*0.7,h*0.4+bYO-attackLunge,w*0.2,h*0.15);}ctx.fillStyle='#4a2e1d';ctx.fillRect(w*0.3+LdX,h*0.8+bYO-attackLunge,w*0.15,h*0.2);ctx.fillRect(w*0.55+RdX,h*0.8+bYO-attackLunge,w*0.15,h*0.2);};
+        // A helper function to draw the ogre character.
+        const drawOgre = (ctx, w, h, frame, isAttacking) => {
+            ctx.clearRect(0, 0, w, h);
+            const bob = frame % 2 === 0 ? 0 : 2;
+            const lunge = isAttacking ? -4 : 0;
+            const skinColor = '#795548', shadowColor = '#5D4037';
+            const clothColor = '#A1887F', clothShadow = '#6D4C41';
+            const clubColor = '#8D6E63', tuskColor = '#EFEBE9';
+
+            ctx.fillStyle = shadowColor;
+            ctx.fillRect(w * 0.25 + lunge, h * 0.7 + bob, w * 0.2, h * 0.3); // Left Leg
+            ctx.fillRect(w * 0.55 + lunge, h * 0.7 + bob, w * 0.2, h * 0.3); // Right Leg
+            ctx.fillStyle = clothShadow;
+            ctx.fillRect(w * 0.4 + lunge, h * 0.65 + bob, w * 0.2, h * 0.15); // Loincloth
+            ctx.fillStyle = clothColor;
+            ctx.beginPath();
+            ctx.moveTo(w * 0.35 + lunge, h * 0.6 + bob); ctx.lineTo(w * 0.65 + lunge, h * 0.6 + bob); ctx.lineTo(w * 0.55 + lunge, h * 0.8 + bob); ctx.lineTo(w * 0.45 + lunge, h * 0.8 + bob);
+            ctx.closePath(); ctx.fill();
+
+            ctx.fillStyle = shadowColor; ctx.fillRect(w * 0.2 + lunge, h * 0.3 + bob, w * 0.6, h * 0.4); // Torso shadow
+            ctx.fillStyle = skinColor;
+            ctx.beginPath(); // Main Torso Shape
+            ctx.moveTo(w * 0.15 + lunge, h * 0.7 + bob); ctx.quadraticCurveTo(w * 0.2 + lunge, h * 0.25 + bob, w * 0.4 + lunge, h * 0.2 + bob); ctx.lineTo(w * 0.6 + lunge, h * 0.2 + bob); ctx.quadraticCurveTo(w * 0.8 + lunge, h * 0.25 + bob, w * 0.85 + lunge, h * 0.7 + bob);
+            ctx.closePath(); ctx.fill();
+            
+            ctx.fillStyle = shadowColor; ctx.fillRect(w * 0.35 + lunge, h * 0.35 + bob, w * 0.3, h*0.1); // Brow
+            ctx.fillStyle = 'black'; ctx.fillRect(w * 0.4 + lunge, h * 0.35 + bob, 4, 4); ctx.fillRect(w * 0.55 + lunge, h * 0.35 + bob, 4, 4); // Eyes
+            ctx.fillStyle = tuskColor; ctx.fillRect(w * 0.42 + lunge, h * 0.5 + bob, 3, 5); // Tusk
+
+            const clubAngle = isAttacking ? -Math.PI / 3 : -Math.PI / 10;
+            const armX = w * 0.7 + lunge, armY = h * 0.5 + bob;
+            ctx.save(); ctx.translate(armX, armY); ctx.rotate(clubAngle);
+            ctx.fillStyle = skinColor; ctx.fillRect(0, -w * 0.1, w * 0.15, h * 0.4); // Arm
+            ctx.fillStyle = clubColor; ctx.beginPath(); ctx.moveTo(w * 0.05, h * 0.2); ctx.quadraticCurveTo(-w*0.1, h*0.3, w*0.05, h*0.8); ctx.quadraticCurveTo(w*0.2, h*0.3, w*0.05, h*0.2); ctx.closePath(); ctx.fill(); // Club
+            ctx.restore();
+        };
+        const drawGargoyle=(ctx,w,h,frame,isAttacking)=>{ctx.clearRect(0,0,w,h);const bob=frame%2==0?0:2;ctx.fillStyle='#6c757d';ctx.fillRect(w*0.25,h*0.4+bob,w*0.5,h*0.5);ctx.fillStyle='#adb5bd';ctx.beginPath();ctx.arc(w*0.5,h*0.3+bob,w*0.2,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ff0000';ctx.fillRect(w*0.45,h*0.28+bob,w*0.1,w*0.1);ctx.fillStyle='#495057';const wingY=isAttacking?h*0.2:h*0.4;ctx.beginPath();ctx.moveTo(w*0.25,h*0.5+bob);ctx.lineTo(w*0.1,wingY);ctx.lineTo(w*0.25,wingY);ctx.closePath();ctx.fill();ctx.beginPath();ctx.moveTo(w*0.75,h*0.5+bob);ctx.lineTo(w*0.9,wingY);ctx.lineTo(w*0.75,wingY);ctx.closePath();ctx.fill();};
+        const drawSkeleton=(ctx,w,h,frame,isAttacking)=>{ctx.clearRect(0,0,w,h);const bob=(frame===1||frame===3)?1:0;const boneColor='#e0e0e0';ctx.fillStyle=boneColor;ctx.fillRect(w*0.4,h*0.4+bob,w*0.2,h*0.3);const headX=w*0.5;const headY=h*0.25+bob;const headW=w*0.5;const headH=h*0.25;ctx.beginPath();ctx.arc(headX,headY,headW/2,Math.PI,0);ctx.rect(headX-headW/2,headY,headW,headH);ctx.fill();ctx.fillStyle='#000';ctx.fillRect(headX-headW*0.3,headY,w*0.12,h*0.12);ctx.fillRect(headX+headW*0.08,headY,w*0.12,h*0.12);ctx.fillStyle=boneColor;const legY=h*0.7+bob;const legH=h*0.3;const legW=w*0.12;if(!isAttacking){if(frame%2===0){ctx.fillRect(w*0.35,legY,legW,legH);ctx.fillRect(w*0.55,legY,legW,legH*0.8);}else{ctx.fillRect(w*0.35,legY,legW,legH*0.8);ctx.fillRect(w*0.55,legY,legW,legH);}}else{ctx.fillRect(w*0.35,legY,legW,legH);ctx.fillRect(w*0.55,legY,legW,legH);}ctx.fillStyle='#C0C0C0';if(isAttacking){ctx.fillRect(w*0.6,h*0.5+bob,w*0.3,w*0.08);}else{ctx.fillRect(w*0.7,h*0.5+bob,w*0.08,h*0.3);}};
+        const drawDragon=(ctx,w,h,frame)=>{ctx.clearRect(0,0,w,h);const bodyX=w*0.3,bodyY=h*0.4,bodyW=w*0.5,bodyH=h*0.4;const wingYOffset=Math.sin(frame/8*Math.PI*2)*h*0.15;const tailWave=Math.sin(frame/8*Math.PI*2+Math.PI/2)*w*0.1;ctx.fillStyle='#111';ctx.beginPath();ctx.moveTo(bodyX,bodyY+bodyH/2);ctx.quadraticCurveTo(w*0.1,h*0.9,w*0.05+tailWave,h*0.7);ctx.quadraticCurveTo(w*0.15+tailWave,h*0.8,bodyX,bodyY+bodyH/2+5);ctx.closePath();ctx.fill();ctx.fillStyle='#222';ctx.fillRect(bodyX+bodyW*0.1,bodyY+bodyH*0.8,w*0.1,h*0.2);ctx.fillRect(bodyX+bodyW*0.6,bodyY+bodyH*0.8,w*0.1,h*0.2);ctx.fillStyle='#333';ctx.beginPath();ctx.moveTo(bodyX+bodyW*0.4,bodyY);ctx.lineTo(w*0.5,h*0.1-wingYOffset);ctx.lineTo(w*0.2,h*0.3-wingYOffset);ctx.closePath();ctx.fill();ctx.fillStyle='#000';ctx.fillRect(bodyX,bodyY,bodyW,bodyH);ctx.fillStyle='#222';ctx.fillRect(bodyX+bodyW*0.2,bodyY+bodyH*0.7,w*0.1,h*0.2);ctx.fillRect(bodyX+bodyW*0.7,bodyY+bodyH*0.7,w*0.1,h*0.2);const headX=bodyX+bodyW;const headY=bodyY;ctx.beginPath();ctx.moveTo(headX,headY);ctx.lineTo(w*0.95,headY-h*0.1);ctx.lineTo(w*0.9,headY+h*0.2);ctx.closePath();ctx.fill();ctx.fillStyle='red';ctx.fillRect(w*0.88,headY,3,3);ctx.fillStyle='#282828';ctx.beginPath();ctx.moveTo(bodyX+bodyW*0.6,bodyY);ctx.lineTo(w*0.9,h*0.2-wingYOffset);ctx.lineTo(w*0.4,h*0.3-wingYOffset);ctx.closePath();ctx.fill();};
+        
+        // Generate animation frames by calling the drawing functions repeatedly
+        this.assets.reaperFrames=[];for(let eS=0;eS<3;eS++){for(let iF=0;iF<4;iF++)this.assets.reaperFrames.push(this.cA((ctx,w,h)=>drawReaper(ctx,w,h,false,0,iF,eS)));for(let wF=0;wF<4;wF++)this.assets.reaperFrames.push(this.cA((ctx,w,h)=>drawReaper(ctx,w,h,true,wF,0,eS)));}
+        this.assets.zombieFrames=[];for(let eS=0;eS<3;eS++){for(let wF=0;wF<4;wF++){this.assets.zombieFrames.push(this.cA((ctx,w,h)=>drawZombie(ctx,w,h,wF,eS,false)));this.assets.zombieFrames.push(this.cA((ctx,w,h)=>drawZombie(ctx,w,h,wF,eS,true)));}}
+        this.assets.ogreFrames=[];for(let i=0;i<4;i++){this.assets.ogreFrames.push(this.cA((ctx,w,h)=>drawOgre(ctx,w,h,i,false),48,48));this.assets.ogreFrames.push(this.cA((ctx,w,h)=>drawOgre(ctx,w,h,i,true),48,48));}
+        this.assets.gargoyleFrames=[];for(let i=0;i<4;i++){this.assets.gargoyleFrames.push(this.cA((ctx,w,h)=>drawGargoyle(ctx,w,h,i,false),48,48));this.assets.gargoyleFrames.push(this.cA((ctx,w,h)=>drawGargoyle(ctx,w,h,i,true),48,48));}
+        this.assets.skeletonFrames=[];for(let i=0;i<4;i++){this.assets.skeletonFrames.push(this.cA((ctx,w,h)=>drawSkeleton(ctx,w,h,i,false)));this.assets.skeletonFrames.push(this.cA((ctx,w,h)=>drawSkeleton(ctx,w,h,i,true)));}
+        this.assets.dragonFrames=[];for(let i=0;i<8;i++){this.assets.dragonFrames.push(this.cA((ctx,w,h)=>drawDragon(ctx,w,h,i),64,64));}
+    },
+    /**
+     * Handles the logic for using the currently selected item or weapon.
+     */
+    useItem:function(){
+        // Prevent using items in non-playable states or inside buildings
+        const isPlayableState=this.currentState===this.STATE_PLAYING||this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE;
+        if(!isPlayableState||this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE)return;
+        
+        // Build the list of available items (inventory + un-owned shop items)
+        const shopItems=[this.SHOP_HEALER,this.SHOP_GHOST_MODE,this.SHOP_AXE,this.SHOP_TURRET,this.SHOP_SHOTGUN,this.SHOP_RAPID,this.SHOP_CLUSTER,this.SHOP_PLASMA,this.SHOP_FULL_MAP,this.SHOP_SPEED_POTION,this.SHOP_WALL,this.SHOP_TELEPORT,this.SHOP_BOMB];
+        const availableShopItems=shopItems.filter(item=>{
+            if((item===this.SHOP_FULL_MAP&&this.mapRevealed)||(item===this.SHOP_TELEPORT&&this.teleporters.length>=2)||(item===this.SHOP_SHOTGUN&&this.player.inventory.includes(this.WEAPON_SHOTGUN))||(item===this.SHOP_RAPID&&this.player.inventory.includes(this.WEAPON_RAPID))||(item===this.SHOP_CLUSTER&&this.player.inventory.includes(this.WEAPON_CLUSTER))||(item===this.SHOP_PLASMA&&this.player.inventory.includes(this.WEAPON_PLASMA)))return false;
+            return true;
+        });
+        const selectableItems=[...this.player.inventory,...availableShopItems];
+        const currentItem=selectableItems[this.player.currentItemIndex];
+        
+        // Handle weapon usage (numeric item types)
+        if(typeof currentItem==='number'){
+            if(this.shootTimer>0)return; // Respect cooldown
+            this.shootTimer=currentItem===this.WEAPON_RAPID?0.1:0.5;
+            switch(currentItem){
+                case this.WEAPON_DEFAULT:this.projectiles.push({x:this.player.x,y:this.player.y,vx:this.player.lastDir.x*300,vy:this.player.lastDir.y*300,width:16,height:16,damage:1,lifetime:2,isScythe:true,weaponType:this.WEAPON_DEFAULT});break;
+                case this.WEAPON_SHOTGUN:for(let i=0;i<6;i++){const ang=Math.atan2(this.player.lastDir.y,this.player.lastDir.x)+(this.random()-0.5)*0.4;this.projectiles.push({x:this.player.x,y:this.player.y,vx:Math.cos(ang)*300,vy:Math.sin(ang)*300,width:4,height:4,damage:1,lifetime:0.5,isShotgunPellet:true,weaponType:this.WEAPON_SHOTGUN});}break;
+                case this.WEAPON_RAPID:this.projectiles.push({x:this.player.x,y:this.player.y,vx:this.player.lastDir.x*400,vy:this.player.lastDir.y*400,width:10,height:10,damage:1,lifetime:1.5,weaponType:this.WEAPON_RAPID});break;
+                case this.WEAPON_CLUSTER:this.projectiles.push({x:this.player.x,y:this.player.y,vx:this.player.lastDir.x*200,vy:this.player.lastDir.y*200,width:20,height:20,damage:1,isCluster:true,lifetime:1.5,weaponType:this.WEAPON_CLUSTER});break;
+                case this.WEAPON_PLASMA:for(let i=0;i<4;i++){const ang=Math.atan2(this.player.lastDir.y,this.player.lastDir.x)+(this.random()-0.5)*0.5;this.projectiles.push({x:this.player.x,y:this.player.y,vx:Math.cos(ang)*250,vy:Math.sin(ang)*250,width:16,height:16,damage:5,lifetime:3,isPlasma:true,bounces:3,weaponType:this.WEAPON_PLASMA});}break;
+            }
+        }
+        // Handle shop item usage (string item types)
+        else if(typeof currentItem==='string'){
+            switch(currentItem){
+                case this.SHOP_HEALER:if(this.player.orbs>=5&&this.player.energy<this.player.maxEnergy){this.player.orbs-=5;this.player.energy++;}break;
+                case this.SHOP_GHOST_MODE:if(this.player.orbs>=15&&!this.player.isGhostMode){this.player.orbs-=15;this.player.isGhostMode=true;this.player.ghostModeTimer=7.0;}break;
+                case this.SHOP_AXE:if(this.player.orbs>=5){const lookTileX=Math.floor(this.player.x/this.TILE_SIZE)+Math.round(this.player.lastDir.x);const lookTileY=Math.floor(this.player.y/this.TILE_SIZE)+Math.round(this.player.lastDir.y);if(this.getTileTypeAt(lookTileX,lookTileY)===this.TILE_TREE){this.player.orbs-=5;this.map[lookTileY][lookTileX]=this.TILE_GRASS;}}break;
+                case this.SHOP_TURRET:if(this.player.orbs>=10){const tileX=Math.floor(this.player.x/this.TILE_SIZE);const tileY=Math.floor(this.player.y/this.TILE_SIZE);if(this.getTileTypeAt(tileX,tileY)===this.TILE_GRASS){this.player.orbs-=10;this.turrets.push({x:tileX*this.TILE_SIZE+this.TILE_SIZE/2,y:tileY*this.TILE_SIZE+this.TILE_SIZE/2,width:24,height:24,lifespan:15.0,shootCooldown:0.8});}}break;
+                case this.SHOP_SHOTGUN:if(this.player.orbs>=1&&!this.player.inventory.includes(this.WEAPON_SHOTGUN)){this.player.orbs-=1;this.player.inventory.push(this.WEAPON_SHOTGUN);}break;
+                case this.SHOP_RAPID:if(this.player.orbs>=1&&!this.player.inventory.includes(this.WEAPON_RAPID)){this.player.orbs-=1;this.player.inventory.push(this.WEAPON_RAPID);}break;
+                case this.SHOP_CLUSTER:if(this.player.orbs>=1&&!this.player.inventory.includes(this.WEAPON_CLUSTER)){this.player.orbs-=1;this.player.inventory.push(this.WEAPON_CLUSTER);}break;
+                case this.SHOP_PLASMA:if(this.player.orbs>=1&&!this.player.inventory.includes(this.WEAPON_PLASMA)){this.player.orbs-=1;this.player.inventory.push(this.WEAPON_PLASMA);}break;
+                case this.SHOP_FULL_MAP:if(this.player.orbs>=1&&!this.mapRevealed){this.player.orbs-=1;this.mapRevealed=true;}break;
+                case this.SHOP_SPEED_POTION:if(this.player.orbs>=1){this.player.orbs-=1;this.player.speed+=10;}break;
+                case this.SHOP_WALL:if(this.player.orbs>=1){const tileX=Math.floor(this.player.x/this.TILE_SIZE);const tileY=Math.floor(this.player.y/this.TILE_SIZE);if(this.getTileTypeAt(tileX,tileY)===this.TILE_GRASS){this.player.orbs-=1;this.walls.push({x:tileX,y:tileY,lifespan:20.0});}}break;
+                case this.SHOP_TELEPORT:if(this.player.orbs>=1&&this.teleporters.length<2){const tileX=Math.floor(this.player.x/this.TILE_SIZE);const tileY=Math.floor(this.player.y/this.TILE_SIZE);if(this.getTileTypeAt(tileX,tileY)===this.TILE_GRASS){this.player.orbs-=1;this.teleporters.push({x:tileX,y:tileY});}}break;
+                case this.SHOP_BOMB:if(this.player.orbs>=1){const tileX=Math.floor(this.player.x/this.TILE_SIZE);const tileY=Math.floor(this.player.y/this.TILE_SIZE);if(this.getTileTypeAt(tileX,tileY)===this.TILE_GRASS&&!this.bombs.some(b=>b.x===tileX&&b.y===tileY)){this.player.orbs-=1;this.bombs.push({x:tileX,y:tileY,timer:3.0});}}break;
+        }
+    }},
+    /**
+     * Inflicts damage on the player, handling invincibility frames and death.
+     */
+    damagePlayer: function(){
+        if(this.player.invincibleTimer>0)return;
+        this.player.energy--;
+        this.player.invincibleTimer=1.5;
+        if(this.player.energy<0){
+            this.setGameState(this.STATE_PLAYER_DEATH_ANIM);
+            this.player.deathAnimTimer=2.0;
+        }
+    },
+    /**
+     * Creates a particle effect for when a ghost is collected.
+     * @param {number} startX - The starting X tile coordinate.
+     * @param {number} startY - The starting Y tile coordinate.
+     */
+    createGhostCaptureEffect: function(startX,startY){for(let i=0;i<20;i++){this.ghostParticles.push({x:startX+this.TILE_SIZE/2,y:startY+this.TILE_SIZE/2,vx:(this.random()-0.5)*50,vy:(this.random()-0.5)*50,lifetime:0.5+this.random()*0.5});}},
+    /**
+     * Creates a smoke particle effect at a given position.
+     * @param {number} x - The pixel X coordinate.
+     * @param {number} y - The pixel Y coordinate.
+     */
+    createSmokeEffect: function(x,y){for(let i=0;i<15;i++){this.smokeParticles.push({x:x,y:y,vx:(this.random()-0.5)*30,vy:(this.random()-0.5)*30,lifetime:0.4+this.random()*0.4,size:2+this.random()*4,alpha:0.5});}},
+    /**
+     * Creates a bone particle effect for a skeleton's death.
+     * @param {number} x - The pixel X coordinate.
+     * @param {number} y - The pixel Y coordinate.
+     */
+    createSkeletonDeathEffect: function(x,y){for(let i=0;i<10;i++){this.boneParticles.push({x:x,y:y,vx:(this.random()-0.5)*120,vy:-this.random()*150,lifetime:1+this.random()*0.5,w:2,h:6,angle:this.random()*Math.PI*2});}},
+    /**
+     * Creates a generic scatter particle effect for explosions and enemy deaths.
+     * @param {number} x - The pixel X coordinate.
+     * @param {number} y - The pixel Y coordinate.
+     * @param {string} color - The RGB color string (e.g., '255,0,0').
+     */
+    createScatterEffect: function(x, y, color) { for(let i=0; i<30; i++) { this.scatterParticles.push({ x: x, y: y, vx: (this.random()-0.5)*150, vy: (this.random()-0.5)*150 - 50, lifetime: 0.5 + this.random()*0.5, size: 1 + this.random()*3, color: color }); } },
+    /**
+     * The main game loop, called via requestAnimationFrame.
+     * @param {DOMHighResTimeStamp} t - The current time.
+     */
+    gameLoop:function(t){
+        requestAnimationFrame(this.gameLoop.bind(this));
+        // Calculate delta time for frame-rate independent physics and logic
+        this.deltaTime=(t-this.lastTime)/1000;
+        this.lastTime=t;
+        if(this.deltaTime>0.1)this.deltaTime=0.1; // Delta time clamping to prevent physics issues
+        this.update();
+        this.render();
+    },
+    /**
+     * The main update function, called every frame by the game loop.
+     */
+    update:function(){
+        // Update global timers and animations
+        if(this.levelMessageTimer>0)this.levelMessageTimer-=this.deltaTime;
+        if(this.allyMessageTimer>0)this.allyMessageTimer-=this.deltaTime;
+        this.animation.waterAnimTimer+=this.deltaTime;if(this.animation.waterAnimTimer>=this.animation.waterFrameDuration)this.animation.waterFrame=(this.animation.waterFrame+1)%4;
+        this.animation.ghostAnimTimer+=this.deltaTime;if(this.animation.ghostAnimTimer>=this.animation.ghostFrameDuration)this.animation.ghostFrame=(this.animation.ghostFrame+1)%8;
+        this.animation.batAnimTimer+=this.deltaTime;if(this.animation.batAnimTimer>=this.animation.batFrameDuration)this.animation.batFrame=(this.animation.batFrame+1)%2;
+        this.animation.slimeAnimTimer+=this.deltaTime;if(this.animation.slimeAnimTimer>=this.animation.slimeFrameDuration)this.animation.slimeFrame=(this.animation.slimeFrame+1)%4;
+        this.animation.teleporterAnimTimer+=this.deltaTime;if(this.animation.teleporterAnimTimer>=this.animation.teleporterFrameDuration){this.animation.teleporterAnimTimer=0;this.animation.teleporterFrame=(this.animation.teleporterFrame+1)%8;}
+        if(this.shootTimer>0)this.shootTimer-=this.deltaTime;
+        if(this.player.invincibleTimer>0)this.player.invincibleTimer-=this.deltaTime;
+
+        // Delegate to the appropriate update function based on the current game state
+        switch(this.currentState){
+            case this.STATE_START_SCREEN:
+                this.introScroll.x-=this.introScroll.speed*this.deltaTime;
+                if(this.introScroll.x<-this.introScroll.textWidth){this.introScroll.x=this.canvas.width;}
+                break;
+            case this.STATE_PLAYING:
+                // Update all game entities and systems
+                this.updatePlayer();this.updateZombies();this.updateOgres();this.updateGargoyles();this.updateSkeletons();this.updateDragons();this.updateProjectiles();this.updateBats();this.updateGhostParticles();this.updateBoneParticles();this.updateSmokeParticles();this.updateScatterParticles();this.updateSlimes();this.updateTurrets();this.updateWalls();this.updateBombs();this.updateCollectibles();this.updateCamera();this.checkGhostCollection();this.checkLevelCompletion();
+                
+                // Handle timed spawners
+                this.animation.zombieSpawnTimer-=this.deltaTime;if(this.animation.zombieSpawnTimer<=0){this.spawnOneZombie();this.animation.zombieSpawnTimer=Math.max(5,30/this.level);}
+                this.animation.collectibleSpawnTimer-=this.deltaTime;if(this.animation.collectibleSpawnTimer<=0){this.spawnCollectible();this.animation.collectibleSpawnTimer=6+this.random()*4;}
+                this.animation.batSpawnTimer-=this.deltaTime;if(this.animation.batSpawnTimer<=0){this.spawnBat();this.animation.batSpawnTimer=15+this.random()*10;}
+                this.animation.slimeSpawnTimer-=this.deltaTime;if(this.animation.slimeSpawnTimer<=0){this.spawnSlime();this.animation.slimeSpawnTimer=25+this.random()*10;}
+                this.animation.skeletonSpawnTimer-=this.deltaTime;if(this.animation.skeletonSpawnTimer<=0){this.spawnSkeleton();this.animation.skeletonSpawnTimer=20+this.random()*10;}
+                
+                // --- START OF CHANGE ---
+                // Handle timed boss spawners for later levels
+                if (this.animation.ogreSpawnTimer > 0) {
+                    this.animation.ogreSpawnTimer -= this.deltaTime;
+                    if (this.animation.ogreSpawnTimer <= 0) {
+                        this.spawnOgre();
+                        this.animation.ogreSpawnTimer = 180 / this.level; // Reset timer
+                    }
+                }
+                if (this.animation.gargoyleSpawnTimer > 0) {
+                    this.animation.gargoyleSpawnTimer -= this.deltaTime;
+                    if (this.animation.gargoyleSpawnTimer <= 0) {
+                        this.spawnGargoyle();
+                        this.animation.gargoyleSpawnTimer = 240 / this.level; // Reset timer
+                    }
+                }
+                if (this.animation.dragonSpawnTimer > 0) {
+                    this.animation.dragonSpawnTimer -= this.deltaTime;
+                    if (this.animation.dragonSpawnTimer <= 0) {
+                        this.spawnDragon();
+                        this.animation.dragonSpawnTimer = 360 / this.level; // Reset timer
+                    }
+                }
+                // --- END OF CHANGE ---
+                break;
+            case this.STATE_INSIDE_MANSION: case this.STATE_INSIDE_CASTLE: case this.STATE_INSIDE_HOUSE:
+                // Only update the player when inside
+                this.updatePlayer();this.updateCamera();
+                break;
+            case this.STATE_PLAYER_DEATH_ANIM:
+                this.updateGhostParticles(); // Particles continue
+                this.player.deathAnimTimer-=this.deltaTime;
+                if(this.player.deathAnimTimer<=0){
+                    this.player.lives--;
+                    if(this.player.lives<=0){
+                        this.setGameState(this.STATE_GAME_OVER);
+                    }else{
+                        this.restartCurrentLevel();
+                    }
+                }
+                break;
+            case this.STATE_NEXT_LEVEL_TRANSITION:
+                this.updateGhostParticles(); // Particles continue
+                this.transitionTimer-=this.deltaTime;
+                if(this.transitionTimer<=0){
+                    const{lives,orbs,inventory,speed}=this.player; // Persist stats
+                    this.level++;
+                    this.setupLevel(this.level);
+                    // Restore stats and give a bonus
+                    this.player.lives=lives;
+                    this.player.energy=this.player.maxEnergy;
+                    this.player.orbs=orbs+5;
+                    this.player.inventory=inventory;
+                    this.player.speed=speed;
+                }
+                break;
+            case this.STATE_GAME_OVER:
+                // No updates needed
+                break;
+        }
+    },
+    /**
+     * Updates the player's state, including movement, animation, and collisions.
+     */
+    updatePlayer:function(){
+        // --- Handle Input ---
+        let kIX=0,kIY=0;let kM=false; // Keyboard Input X/Y, Keyboard Moved
+        if(this.keysPressed.ArrowLeft||this.keysPressed.KeyA)kIX-=1;
+        if(this.keysPressed.ArrowRight||this.keysPressed.KeyD)kIX+=1;
+        if(this.keysPressed.ArrowUp||this.keysPressed.KeyW)kIY-=1;
+        if(this.keysPressed.ArrowDown||this.keysPressed.KeyS)kIY+=1;
+        if(this.keysPressed.Space)this.useItem();
+        if(kIX!==0||kIY!==0){kM=true;if(kIX!==0&&kIY!==0){const L=Math.sqrt(2);kIX/=L;kIY/=L;}} // Normalize diagonal movement
+        
+        // Determine velocity based on joystick or keyboard input
+        if(this.joystick.active){
+            const mg=Math.sqrt(this.joystick.inputX*this.joystick.inputX+this.joystick.inputY*this.joystick.inputY);
+            if(mg>0){this.player.vx=(this.joystick.inputX/mg)*this.player.speed;this.player.vy=(this.joystick.inputY/mg)*this.player.speed;this.player.isMoving=true;}
+            else if(kM){this.player.vx=kIX*this.player.speed;this.player.vy=kIY*this.player.speed;this.player.isMoving=true;}
+            else{this.player.vx=0;this.player.vy=0;this.player.isMoving=false;}
+        }else{
+            if(kM){this.player.vx=kIX*this.player.speed;this.player.vy=kIY*this.player.speed;this.player.isMoving=true;}
+            else{this.player.vx=0;this.player.vy=0;this.player.isMoving=false;}
+        }
+
+        // --- Update Timers and State ---
+        if(this.player.isGhostMode){this.player.ghostModeTimer-=this.deltaTime;if(this.player.ghostModeTimer<=0)this.player.isGhostMode=false;}
+        if(this.player.teleportCooldown>0)this.player.teleportCooldown-=this.deltaTime;
+
+        // --- Animation Logic ---
+        // Eye blinking state machine
+        this.player.eyeBlinkTimer+=this.deltaTime;
+        switch(this.player.eyeBlinkState){
+            case 'OPEN':this.player.eyeDrawStyle=0;if(this.player.eyeBlinkTimer>=this.player.eyeBlinkRandomInterval){this.player.eyeBlinkState='CLOSING_HALF';this.player.eyeBlinkTimer=0;}break;
+            case 'CLOSING_HALF':this.player.eyeDrawStyle=1;if(this.player.eyeBlinkTimer>=this.animation.eyeBlinkPhaseDurations[0]){this.player.eyeBlinkState='CLOSED';this.player.eyeBlinkTimer=0;}break;
+            case 'CLOSED':this.player.eyeDrawStyle=2;if(this.player.eyeBlinkTimer>=this.animation.eyeBlinkPhaseDurations[1]){this.player.eyeBlinkState='OPENING_HALF';this.player.eyeBlinkTimer=0;}break;
+            case 'OPENING_HALF':this.player.eyeDrawStyle=1;if(this.player.eyeBlinkTimer>=this.animation.eyeBlinkPhaseDurations[2]){this.player.eyeBlinkState='OPEN';this.player.eyeBlinkTimer=0;this.player.eyeBlinkRandomInterval=2+this.random()*4;}break;
+        }
+        // Idle/walk animation
+        if(!this.player.isMoving){this.player.idleAnimTimer+=this.deltaTime;if(this.player.idleAnimTimer>=this.animation.reaperIdleFrameDuration){this.player.idleAnimTimer=0;this.player.idleFrame=(this.player.idleFrame+1)%4;}}
+        else{this.player.walkAnimTimer+=this.deltaTime;if(this.player.walkAnimTimer>=this.animation.reaperWalkFrameDuration){this.player.walkAnimTimer=0;this.player.walkFrame=(this.player.walkFrame+1)%4;}}
+        
+        // --- Movement and Collision ---
+        let nX=this.player.x+this.player.vx*this.deltaTime,nY=this.player.y+this.player.vy*this.deltaTime;
+        const phw=this.player.width/4,phh=this.player.height/4; // Player hitbox half-width/height for collision
+        // Collision detection is disabled in ghost mode.
+        if(!this.player.isGhostMode){
+            // X-axis collision
+            if(this.player.vx!==0){const cTX=(this.player.vx>0)?Math.floor((nX+phw-1)/this.TILE_SIZE):Math.floor((nX-phw)/this.TILE_SIZE);const Y1=Math.floor((this.player.y-phh+1)/this.TILE_SIZE),Y2=Math.floor((this.player.y+phh-1)/this.TILE_SIZE);if(this.isTileSolid(this.getTileTypeAt(cTX,Y1))||this.isTileSolid(this.getTileTypeAt(cTX,Y2))){nX=(this.player.vx>0)?cTX*this.TILE_SIZE-phw:(cTX+1)*this.TILE_SIZE+phw;this.player.vx=0;}}
+            this.player.x=nX; // Apply X movement
+            // Y-axis collision
+            if(this.player.vy!==0){const cTY=(this.player.vy>0)?Math.floor((nY+phh-1)/this.TILE_SIZE):Math.floor((nY-phh)/this.TILE_SIZE);const X1=Math.floor((this.player.x-phw+1)/this.TILE_SIZE),X2=Math.floor((this.player.x+phw-1)/this.TILE_SIZE);if(this.isTileSolid(this.getTileTypeAt(X1,cTY))||this.isTileSolid(this.getTileTypeAt(X2,cTY))){nY=(this.player.vy>0)?cTY*this.TILE_SIZE-phh:(cTY+1)*this.TILE_SIZE+phh;this.player.vy=0;}}
+            this.player.y=nY; // Apply Y movement
+        } else {
+            this.player.x = nX;
+            this.player.y = nY;
+        }
+
+        // Update last facing direction for shooting
+        if(this.player.isMoving){const mag=Math.hypot(this.player.vx,this.player.vy);if(mag>0){this.player.lastDir.x=this.player.vx/mag;this.player.lastDir.y=this.player.vy/mag;}}
+        
+        const isInside=this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE;
+        
+        // --- Interactions and State Transitions ---
+        if(this.currentState===this.STATE_PLAYING){
+            // Clamp player position to map bounds
+            this.player.x=Math.max(phw,Math.min(this.player.x,this.MAP_WIDTH_PX-phw));this.player.y=Math.max(phh,Math.min(this.player.y,this.MAP_HEIGHT_PX-phh));
+            
+            // Teleporter logic
+            if(this.teleporters.length===2&&this.player.teleportCooldown<=0&&!this.player.isGhostMode){const pTileX=Math.floor(this.player.x/this.TILE_SIZE),pTileY=Math.floor(this.player.y/this.TILE_SIZE);const t1=this.teleporters[0],t2=this.teleporters[1];let teleported=false;if(pTileX===t1.x&&pTileY===t1.y){this.player.x=t2.x*this.TILE_SIZE+this.TILE_SIZE/2;this.player.y=t2.y*this.TILE_SIZE+this.TILE_SIZE/2;teleported=true;}else if(pTileX===t2.x&&pTileY===t2.y){this.player.x=t1.x*this.TILE_SIZE+this.TILE_SIZE/2;this.player.y=t1.y*this.TILE_SIZE+this.TILE_SIZE/2;teleported=true;}if(teleported){this.player.teleportCooldown=1.0;this.updateCamera();this.player.vx=0;this.player.vy=0;this.player.isMoving=false;return;}}
+            
+            // Building entry logic
+            if(this.mansion&&!this.player.isGhostMode){
+                if (this.castle && !this.player.hasCastleKey && !this.player.hasShownCastleHint) {
+                    const hintDist = Math.hypot(this.player.x - (this.mansion.x + 1.5) * this.TILE_SIZE, this.player.y - (this.mansion.y + 1.5) * this.TILE_SIZE);
+                    if (hintDist < this.TILE_SIZE * 4) { this.levelMessageText = "It's a mansion."; this.levelMessageTimer = 2.0; this.player.hasShownCastleHint = true; }
+                }
+                const dX=(this.mansion.x+1.5)*this.TILE_SIZE,dY=(this.mansion.y+2.5)*this.TILE_SIZE;if(Math.hypot(this.player.x-dX,this.player.y-dY)<this.TILE_SIZE){this.player.outsideX=dX;this.player.outsideY=(this.mansion.y+3.5)*this.TILE_SIZE;this.setGameState(this.STATE_INSIDE_MANSION);this.player.x=4.5*this.TILE_SIZE;this.player.y=10.5*this.TILE_SIZE;this.player.lastDir={x:0,y:-1};this.player.vx=0;this.player.vy=0;this.player.isMoving=false;this.updateCamera();return;}
+            }
+            if(this.castle&&!this.player.isGhostMode){const dX=(this.castle.x+2)*this.TILE_SIZE,dY=(this.castle.y+3.5)*this.TILE_SIZE;if(Math.hypot(this.player.x-dX,this.player.y-dY)<this.TILE_SIZE){
+                if (this.player.hasCastleKey) {
+                    this.player.outsideX=dX;this.player.outsideY=(this.castle.y+4.5)*this.TILE_SIZE;this.setGameState(this.STATE_INSIDE_CASTLE);this.player.x=4.5*this.TILE_SIZE;this.player.y=10.5*this.TILE_SIZE;this.player.lastDir={x:0,y:-1};this.player.vx=0;this.player.vy=0;this.player.isMoving=false;this.updateCamera();return;
+                } else { this.levelMessageText = "You need a key."; this.levelMessageTimer = 2.0; }
+            }}
+            if(this.house&&!this.player.isGhostMode){const dX=(this.house.x+0.5)*this.TILE_SIZE,dY=(this.house.y+1.5)*this.TILE_SIZE;if(Math.hypot(this.player.x-dX,this.player.y-dY)<this.TILE_SIZE){this.player.outsideX=dX;this.player.outsideY=(this.house.y+2.5)*this.TILE_SIZE;this.setGameState(this.STATE_INSIDE_HOUSE);this.player.x=4.5*this.TILE_SIZE;this.player.y=10.5*this.TILE_SIZE;this.player.lastDir={x:0,y:-1};this.player.vx=0;this.player.vy=0;this.player.isMoving=false;this.updateCamera();return;}}
+            
+            // Water damage
+            const curTX=Math.floor(this.player.x/this.TILE_SIZE),curTY=Math.floor(this.player.y/this.TILE_SIZE);
+            if(this.getTileTypeAt(curTX,curTY)===this.TILE_WATER){this.player.energy=-1;this.damagePlayer();}
+        }
+        else if(isInside){ // Logic for when player is inside a building
+            // Clamp to interior bounds
+            this.player.x=Math.max(this.TILE_SIZE+phw,Math.min(this.player.x,(this.VIEWPORT_WIDTH_TILES-1)*this.TILE_SIZE-phw));
+            this.player.y=Math.max(phh,Math.min(this.player.y,(this.VIEWPORT_HEIGHT_TILES)*this.TILE_SIZE-phh));
+
+            // Interior collectible pickup
+            const pTileX=Math.floor(this.player.x/this.TILE_SIZE);
+            const pTileY=Math.floor(this.player.y/this.TILE_SIZE);
+            let currentInteriorType='';
+            if(this.currentState===this.STATE_INSIDE_MANSION)currentInteriorType='mansion';
+            else if(this.currentState===this.STATE_INSIDE_CASTLE)currentInteriorType='castle';
+            else if(this.currentState===this.STATE_INSIDE_HOUSE)currentInteriorType='house';
+            if(currentInteriorType){
+                for(let i=this.interiorCollectibles.length-1;i>=0;i--){
+                    const item=this.interiorCollectibles[i];
+                    if(item.interiorType===currentInteriorType&&item.x===pTileX&&item.y===pTileY){
+                        let collected=true;
+                        switch(item.type){
+                            case this.COLLECTIBLE_ORB:this.player.orbs++;break;
+                            case this.COLLECTIBLE_ENERGY_POTION: if(this.player.energy < this.player.maxEnergy) { this.player.energy++; } else { collected = false; } break;
+                            case this.COLLECTIBLE_LIFE_POTION: this.player.lives++; break;
+                            case this.COLLECTIBLE_CASTLE_KEY: this.player.hasCastleKey = true; this.allyMessageText = "I found the castle key!"; this.allyMessageTimer = 2.0; break;
+                            case this.WEAPON_SHOTGUN:case this.WEAPON_RAPID:case this.WEAPON_CLUSTER:case this.WEAPON_PLASMA:if(!this.player.inventory.includes(item.type))this.player.inventory.push(item.type);break;
+                            case this.SHOP_FULL_MAP:this.mapRevealed=true;break;
+                            default:collected=false;
+                        }
+                        if(collected){this.interiorCollectibles.splice(i,1);}
+                    }
+                }
+            }
+            // Exit door logic
+            const curTX=Math.floor(this.player.x/this.TILE_SIZE),curTY=Math.floor(this.player.y/this.TILE_SIZE);
+            if(this.getTileTypeAt(curTX,curTY)===this.TILE_MANSION_DOOR){
+                this.setGameState(this.STATE_PLAYING);
+                this.player.x=this.player.outsideX;
+                this.player.y=this.player.outsideY;
+                this.player.lastDir={x:0,y:1};
+                this.player.vx=0;this.player.vy=0;this.player.isMoving=false;
+                this.updateCamera();
+                return;
+            }
+        }
+    },
+    /**
+     * Updates all zombies, handling their AI, animation, and state.
+     */
+    updateZombies:function(){for(let i=this.zombies.length-1;i>=0;i--){const z=this.zombies[i];if(z.isDying){z.deathTimer-=this.deltaTime;if(z.deathTimer<=0)this.zombies.splice(i,1);continue;}
+        if(z.isSpawning){z.spawnTimer-=this.deltaTime;if(z.spawnTimer<=0)z.isSpawning=false;continue;}
+        if(z.attackCooldown>0)z.attackCooldown-=this.deltaTime;if(z.isAttacking){z.attackTimer-=this.deltaTime;if(z.attackTimer<=0)z.isAttacking=false;}
+        const distToPlayer=Math.hypot(this.player.x-z.x,this.player.y-z.y);if(distToPlayer<z.width*0.8&&z.attackCooldown<=0&&!z.isAttacking){z.isAttacking=true;z.attackTimer=this.animation.zombieAttackDuration;z.attackCooldown=1.0;}
+        if(z.isAttacking&&distToPlayer<z.width*0.7){this.damagePlayer();}
+        if(z.isAttacking){z.vx=0;z.vy=0;}else{z.eyeBlinkTimer+=this.deltaTime;switch(z.eyeBlinkState){case 'OPEN':z.eyeDrawStyle=0;if(z.eyeBlinkTimer>=z.eyeBlinkRandomInterval){z.eyeBlinkState='CLOSING_HALF';z.eyeBlinkTimer=0;}break;case 'CLOSING_HALF':z.eyeDrawStyle=1;if(z.eyeBlinkTimer>=this.animation.eyeBlinkPhaseDurations[0]){z.eyeBlinkState='CLOSED';z.eyeBlinkTimer=0;}break;case 'CLOSED':z.eyeDrawStyle=2;if(z.eyeBlinkTimer>=this.animation.eyeBlinkPhaseDurations[1]){this.player.eyeBlinkState='OPENING_HALF';z.eyeBlinkTimer=0;}break;case 'OPENING_HALF':z.eyeDrawStyle=1;if(z.eyeBlinkTimer>=this.animation.eyeBlinkPhaseDurations[2]){z.eyeBlinkState='OPEN';z.eyeBlinkTimer=0;z.eyeBlinkRandomInterval=2+this.random()*4;}break;}
+            z.moveTimer-=this.deltaTime;if(z.moveTimer<=0){z.moveTimer=1.5+this.random()*2;const rand=this.random();if(rand<0.25){z.vx=z.speed;z.vy=0;}else if(rand<0.5){z.vx=-z.speed;z.vy=0;}else if(rand<0.75){z.vx=0;z.vy=z.speed;}else{z.vx=0;z.vy=-z.speed;}}
+            let nX=z.x+z.vx*this.deltaTime,nY=z.y+z.vy*this.deltaTime;const curTileX=Math.floor(nX/this.TILE_SIZE),curTileY=Math.floor(nY/this.TILE_SIZE);if(this.isPositionBlockedForEnemy(curTileX,curTileY)){nX=z.x;nY=z.y;z.vx=0;z.vy=0;z.moveTimer=0;}z.x=nX;z.y=nY;z.walkAnimTimer+=this.deltaTime;if(z.walkAnimTimer>=this.animation.reaperWalkFrameDuration*2){z.walkAnimTimer=0;z.walkFrame=(z.walkFrame+1)%4;}}}},
+    /**
+     * Updates all ogres, handling their AI (chasing, attacking).
+     */
+    updateOgres:function(){for(let i=this.ogres.length-1;i>=0;i--){const o=this.ogres[i];if(o.isDying){o.deathTimer-=this.deltaTime;if(o.deathTimer<=0)this.ogres.splice(i,1);continue;}
+        if(o.invincibleTimer>0)o.invincibleTimer-=this.deltaTime;o.animTimer+=this.deltaTime;if(o.animTimer>0.2) {o.animTimer=0; o.animFrame=(o.animFrame+1)%4;}
+        const distToPlayer=Math.hypot(this.player.x-o.x,this.player.y-o.y);if(o.isAttacking){o.attackTimer-=this.deltaTime;if(o.attackTimer<=0){o.isAttacking=false;if(distToPlayer<o.width*0.8)this.damagePlayer();}}else if(distToPlayer<o.width*0.7){o.isAttacking=true;o.attackTimer=0.8;}else{const dx=this.player.x-o.x,dy=this.player.y-o.y;const ang=Math.atan2(dy,dx);const nextX=o.x+Math.cos(ang)*o.speed*this.deltaTime;if(!this.isPositionBlockedForEnemy(Math.floor(nextX/this.TILE_SIZE),Math.floor(o.y/this.TILE_SIZE))){o.x=nextX;}const nextY=o.y+Math.sin(ang)*o.speed*this.deltaTime;if(!this.isPositionBlockedForEnemy(Math.floor(o.x/this.TILE_SIZE),Math.floor(nextY/this.TILE_SIZE))){o.y=nextY;}}}},
+    /**
+     * Updates all gargoyles, handling their AI (chasing, attacking).
+     */
+    updateGargoyles:function(){for(let i=this.gargoyles.length-1;i>=0;i--){const g=this.gargoyles[i];if(g.isDying){g.deathTimer-=this.deltaTime;if(g.deathTimer<=0)this.gargoyles.splice(i,1);continue;}
+        if(g.invincibleTimer>0)g.invincibleTimer-=this.deltaTime;g.animTimer+=this.deltaTime;if(g.animTimer>0.2) {g.animTimer=0; g.animFrame=(g.animFrame+1)%4;}
+        const distToPlayer=Math.hypot(this.player.x-g.x,this.player.y-g.y);if(g.isAttacking){g.attackTimer-=this.deltaTime;if(g.attackTimer<=0){g.isAttacking=false;if(distToPlayer<g.width*0.8)this.damagePlayer();}}else if(distToPlayer<g.width*0.7){g.isAttacking=true;g.attackTimer=0.8;}else{const dx=this.player.x-g.x,dy=this.player.y-g.y;const ang=Math.atan2(dy,dx);const nextX=g.x+Math.cos(ang)*g.speed*this.deltaTime;if(!this.isPositionBlockedForEnemy(Math.floor(nextX/this.TILE_SIZE),Math.floor(g.y/this.TILE_SIZE))){g.x=nextX;}const nextY=g.y+Math.sin(ang)*g.speed*this.deltaTime;if(!this.isPositionBlockedForEnemy(Math.floor(g.x/this.TILE_SIZE),Math.floor(nextY/this.TILE_SIZE))){g.y=nextY;}}}},
+    /**
+     * Updates all skeletons, handling their state machine (digging, chasing, attacking).
+     */
+    updateSkeletons:function(){for(let i=this.skeletons.length-1;i>=0;i--){const s=this.skeletons[i];if(s.isDying){this.skeletons.splice(i,1);continue;}s.animTimer-=this.deltaTime;switch(s.state){
+                case 'dig_up':if(s.animTimer<=0){s.state='chasing';s.stateTimer=5+this.random()*3;}break;
+                case 'chasing':const dist=Math.hypot(this.player.x-s.x,this.player.y-s.y);if(dist<s.width*0.8){s.state='attacking';s.animTimer=0.5;}else{const dx=this.player.x-s.x,dy=this.player.y-s.y;const ang=Math.atan2(dy,dx);const nX=s.x+Math.cos(ang)*s.speed*this.deltaTime;const nY=s.y+Math.sin(ang)*s.speed*this.deltaTime;if(!this.isPositionBlockedForEnemy(Math.floor(nX/this.TILE_SIZE),Math.floor(nY/this.TILE_SIZE))){s.x=nX;s.y=nY;}s.walkAnimTimer+=this.deltaTime;if(s.walkAnimTimer>0.15){s.walkAnimTimer=0;s.walkFrame=(s.walkFrame+1)%4;}}s.stateTimer-=this.deltaTime;if(s.stateTimer<=0){s.state='dig_down';s.animTimer=1.0;}break;
+                case 'attacking':if(s.animTimer<=0){s.state='chasing';s.stateTimer=5+this.random()*3;const dist2=Math.hypot(this.player.x-s.x,this.player.y-s.y);if(dist2<s.width*0.9)this.damagePlayer();}break;
+                case 'dig_down':if(s.animTimer<=0)this.skeletons.splice(i,1);break;
+    }}},
+    /**
+     * Updates all dragons, handling their AI (chasing, shooting fireballs).
+     */
+    updateDragons:function(){for(let i=this.dragons.length-1;i>=0;i--){const d=this.dragons[i];if(d.isDying){d.deathTimer-=this.deltaTime;if(d.deathTimer<=0){this.dragons.splice(i,1);for(let k=0;k<10;k++)this.collectibles.push({x:Math.floor(d.x/this.TILE_SIZE),y:Math.floor(d.y/this.TILE_SIZE),type:this.COLLECTIBLE_ORB,collected:false});}continue;}
+        if(d.invincibleTimer>0)d.invincibleTimer-=this.deltaTime;d.animTimer+=this.deltaTime;if(d.animTimer>0.1){d.animTimer=0;d.animFrame=(d.animFrame+1)%8;}
+        const dx=this.player.x-d.x,dy=this.player.y-d.y;const distToPlayer=Math.hypot(dx,dy);const ang=Math.atan2(dy,dx);d.x+=Math.cos(ang)*d.speed*this.deltaTime;d.y+=Math.sin(ang)*d.speed*this.deltaTime;
+        if(distToPlayer<d.width/2){this.damagePlayer();}
+        d.shootCooldown-=this.deltaTime;if(d.shootCooldown<=0){d.shootCooldown=2.0+this.random()*2.0;const fireballSpeed=150;const angToPlayer=Math.atan2(this.player.y-d.y,this.player.x-d.x);this.projectiles.push({x:d.x,y:d.y,vx:Math.cos(angToPlayer)*fireballSpeed,vy:Math.sin(angToPlayer)*fireballSpeed,width:16,height:16,damage:1,lifetime:4,isFireball:true});}}},
+    /**
+     * Updates all projectiles, handling their movement, lifetime, and collision with enemies.
+     */
+    updateProjectiles:function(){for(let i=this.projectiles.length-1;i>=0;i--){const p=this.projectiles[i];
+        // Special collision logic for different weapon types
+        const weapon=p.weaponType;if(weapon===this.WEAPON_SHOTGUN||weapon===this.WEAPON_RAPID){const nextX=p.x+p.vx*this.deltaTime;const nextY=p.y+p.vy*this.deltaTime;const tileTypeAtNextPos=this.getTileTypeAt(Math.floor(nextX/this.TILE_SIZE),Math.floor(nextY/this.TILE_SIZE));const solidTiles=[this.TILE_TREE,this.TILE_ROCK,this.TILE_MANSION_EXT_WALL,this.TILE_CASTLE_EXT_WALL,this.TILE_HOUSE_EXT_WALL];if(solidTiles.includes(tileTypeAtNextPos)){this.projectiles.splice(i,1);continue;}}
+        if(p.isPlasma){const nextX=p.x+p.vx*this.deltaTime;const nextY=p.y+p.vy*this.deltaTime;const tileX=Math.floor(nextX/this.TILE_SIZE);const tileY=Math.floor(p.y/this.TILE_SIZE);
+            if(this.isTileSolid(this.getTileTypeAt(tileX,tileY))&&this.getTileTypeAt(tileX,tileY)===this.TILE_ROCK){p.vx*=-1;p.bounces--;}
+            const tileX2=Math.floor(p.x/this.TILE_SIZE);const tileY2=Math.floor(nextY/this.TILE_SIZE);
+            if(this.isTileSolid(this.getTileTypeAt(tileX2,tileY2))&&this.getTileTypeAt(tileX2,tileY2)===this.TILE_ROCK){p.vy*=-1;p.bounces--;}
+            if(this.getTileTypeAt(Math.floor(nextX/this.TILE_SIZE),Math.floor(nextY/this.TILE_SIZE))===this.TILE_TREE){this.map[Math.floor(nextY/this.TILE_SIZE)][Math.floor(nextX/this.TILE_SIZE)]=this.TILE_GRASS;this.createSmokeEffect(nextX,nextY);p.lifetime=0;}
+            if(p.bounces<=0)p.lifetime=0;}
+        
+        p.x+=p.vx*this.deltaTime;p.y+=p.vy*this.deltaTime;p.lifetime-=this.deltaTime;
+        
+        // Cluster bomb splits into smaller projectiles
+        if(p.isCluster&&p.lifetime<1){for(let j=0;j<6;j++){const ang=Math.random()*Math.PI*2;this.projectiles.push({x:p.x,y:p.y,vx:Math.cos(ang)*100,vy:Math.sin(ang)*100,width:8,height:8,damage:1,lifetime:0.5});}p.lifetime=-1;}
+        if(p.lifetime<=0){this.projectiles.splice(i,1);continue;}
+        
+        // Enemy projectile collision with player
+        if(p.isFireball){if(!this.player.isGhostMode&&Math.hypot(p.x-this.player.x,p.y-this.player.y)<this.player.width/2){this.damagePlayer();this.projectiles.splice(i,1);}continue;}
+        
+        // Player projectile collision with enemies
+        let hit=false;const enemies=[...this.zombies,...this.ogres,...this.gargoyles,...this.skeletons,...this.dragons];
+        for(const e of enemies){
+            if(e.isDying||e.isSpawning||(e.state&&e.state!=='chasing'&&e.state!=='attacking'))continue;
+            const dist=Math.hypot(p.x-e.x,p.y-e.y);
+            if(dist<e.width/2){
+                if(p.isPlasma)this.createSmokeEffect(e.x,e.y);
+                e.health-=p.damage||1;
+                if(e.health<=0 && !e.isDying){
+                    e.isDying=true;
+                    // Different death effects for different enemies
+                    if (e.moveTimer !== undefined) { // Zombie
+                        e.deathType = p.isScythe ? 'fade' : 'scatter';
+                        if(e.deathType === 'scatter') this.createScatterEffect(e.x, e.y, '255,0,0');
+                    }
+                    else if (e.maxHealth === 10) { this.createScatterEffect(e.x, e.y, '128,128,128'); } // Gargoyle
+                    else if (e.maxHealth === 3) { this.createScatterEffect(e.x, e.y, '0,128,0'); } // Ogre
+                    else if(e.speed===70) { this.createSkeletonDeathEffect(e.x,e.y); } // Skeleton
+                    
+                    e.deathTimer=e.speed>40?0.5:1.5;
+                    if(e.width===64)e.deathTimer=2.5; // Dragon
+                }
+                if(e.invincibleTimer!==undefined)e.invincibleTimer=0.3;
+                this.projectiles.splice(i,1);hit=true;break;
+            }
+        }
+        if(hit)continue;
+    }},
+    updateBats: function(){for(let i=this.bats.length-1;i>=0;i--){const b=this.bats[i];const dx=this.player.x-b.x,dy=this.player.y-b.y;const dist=Math.hypot(dx,dy);if(this.slimes.length>0){const slime=this.slimes[0];const slimeDist=Math.hypot(slime.x-b.x,slime.y-b.y);if(slimeDist<slime.width){slime.hits--;this.bats.splice(i,1);continue;}}
+        if(dist>1){const ang=Math.atan2(dy,dx);b.vx=Math.cos(ang)*b.speed;b.vy=Math.sin(ang)*b.speed;}else{b.vx=0;b.vy=0;}b.x+=b.vx*this.deltaTime;b.y+=b.vy*this.deltaTime;if(dist<b.width/2){this.damagePlayer();this.bats.splice(i,1);continue;}if(b.x<-this.TILE_SIZE*2||b.x>this.MAP_WIDTH_PX+this.TILE_SIZE*2||b.y<-this.TILE_SIZE*2||b.y>this.MAP_HEIGHT_PX+this.TILE_SIZE*2){this.bats.splice(i,1);}}},
+    updateGhostParticles: function(){for(let i=this.ghostParticles.length-1;i>=0;i--){const p=this.ghostParticles[i];const dx=this.player.x-p.x;const dy=this.player.y-p.y;const dist=Math.hypot(dx,dy);p.vx+=dx*0.5;p.vy+=dy*0.5;p.vx*=0.9;p.vy*=0.9;p.x+=p.vx*this.deltaTime;p.y+=p.vy*this.deltaTime;p.lifetime-=this.deltaTime;if(p.lifetime<=0||dist<10){this.ghostParticles.splice(i,1);}}},
+    updateSmokeParticles: function(){for(let i=this.smokeParticles.length-1;i>=0;i--){const p=this.smokeParticles[i];p.x+=p.vx*this.deltaTime;p.y+=p.vy*this.deltaTime;p.lifetime-=this.deltaTime;if(p.lifetime<=0){this.smokeParticles.splice(i,1);}}},
+    updateBoneParticles: function(){for(let i=this.boneParticles.length-1;i>=0;i--){const p=this.boneParticles[i];p.vy+=200*this.deltaTime;p.x+=p.vx*this.deltaTime;p.y+=p.vy*this.deltaTime;p.lifetime-=this.deltaTime;if(p.lifetime<=0){this.boneParticles.splice(i,1);}}},
+    updateScatterParticles: function() { for(let i=this.scatterParticles.length-1; i>=0; i--) { const p = this.scatterParticles[i]; p.vy += 200 * this.deltaTime; p.x += p.vx * this.deltaTime; p.y += p.vy * this.deltaTime; p.lifetime -= this.deltaTime; if (p.lifetime <= 0) { this.scatterParticles.splice(i, 1); } } },
+    updateSlimes: function(){for(let i=this.slimes.length-1;i>=0;i--){const s=this.slimes[i];if(s.isDying){s.deathTimer-=this.deltaTime;if(s.deathTimer<=0)this.slimes.splice(i,1);continue;}if(s.hits<=0){s.isDying=true;s.deathTimer=0.5;}const dx=this.player.x-s.x,dy=this.player.y-s.y;const dist=Math.hypot(dx,dy);if(dist>this.TILE_SIZE*0.8){const ang=Math.atan2(dy,dx);s.x+=Math.cos(ang)*s.speed*this.deltaTime;s.y+=Math.sin(ang)*s.speed*this.deltaTime;}}},
+    updateTurrets: function(){for(let i=this.turrets.length-1;i>=0;i--){const t=this.turrets[i];t.lifespan-=this.deltaTime;if(t.lifespan<=0){this.turrets.splice(i,1);continue;}t.shootCooldown-=this.deltaTime;if(t.shootCooldown<=0){t.shootCooldown=0.8;let closestEnemy=null,minDist=150;const enemies=[...this.zombies,...this.ogres,...this.bats,...this.gargoyles,...this.skeletons.filter(s=>s.state==='chasing'||s.state==='attacking'),...this.dragons];for(const e of enemies){if(e.isDying)continue;const dist=Math.hypot(e.x-t.x,e.y-t.y);if(dist<minDist){minDist=dist;closestEnemy=e;}}if(closestEnemy){const dx=closestEnemy.x-t.x,dy=closestEnemy.y-t.y;const ang=Math.atan2(dy,dx);this.projectiles.push({x:t.x,y:t.y,vx:Math.cos(ang)*200,vy:Math.sin(ang)*200,width:8,height:8,damage:1,lifetime:1});}}}},
+    updateWalls: function(){for(let i=this.walls.length-1;i>=0;i--){const w=this.walls[i];w.lifespan-=this.deltaTime;if(w.lifespan<=0){this.walls.splice(i,1);}}},
+    updateBombs: function(){for(let i=this.bombs.length-1;i>=0;i--){const b=this.bombs[i];b.timer-=this.deltaTime;if(b.timer<=0){this.triggerBomb(b.x,b.y);this.bombs.splice(i,1);}}},
+    triggerBomb: function(bombTileX,bombTileY){
+        // Create visual effects for the explosion
+        this.createSmokeEffect(bombTileX*this.TILE_SIZE+this.TILE_SIZE/2,bombTileY*this.TILE_SIZE+this.TILE_SIZE/2);
+        this.createSmokeEffect(bombTileX*this.TILE_SIZE+this.TILE_SIZE/2,bombTileY*this.TILE_SIZE+this.TILE_SIZE/2);
+        
+        // Loop through a 3x3 area around the bomb
+        for(let y=bombTileY-1;y<=bombTileY+1;y++){
+            for(let x=bombTileX-1;x<=bombTileX+1;x++){
+                if(x<0||x>=this.MAP_WIDTH_TILES||y<0||y>=this.MAP_HEIGHT_TILES)continue;
+
+                // Create a grey scatter effect on each tile in the blast radius
+                this.createScatterEffect(x * this.TILE_SIZE + this.TILE_SIZE / 2, y * this.TILE_SIZE + this.TILE_SIZE / 2, '100,100,100');
+                
+                // Destroy destructible tiles
+                const tileType=this.map[y][x];
+                if(tileType===this.TILE_TREE||tileType===this.TILE_ROCK){
+                    this.map[y][x]=this.TILE_GRASS;
+                }
+
+                // Damage enemies in the blast radius
+                const allEnemyArrays=[this.zombies,this.ogres,this.gargoyles,this.skeletons,this.dragons];
+                for(const enemyArray of allEnemyArrays){
+                    for(const e of enemyArray){
+                        if(e.isDying)continue;
+                        const eTileX=Math.floor(e.x/this.TILE_SIZE);
+                        const eTileY=Math.floor(e.y/this.TILE_SIZE);
+                        if(eTileX===x&&eTileY===y){
+                            e.isDying=true;
+                            e.deathTimer=0.1;
+                        }
+                    }
+                }
+                for(let bIdx=this.bats.length-1;bIdx>=0;bIdx--){
+                    const b=this.bats[bIdx];
+                    const bTileX=Math.floor(b.x/this.TILE_SIZE);
+                    const bTileY=Math.floor(b.y/this.TILE_SIZE);
+                    if(bTileX===x&&bTileY===y){
+                        this.bats.splice(bIdx,1);
+                    }
+                }
+
+                // Damage player if in the blast radius
+                if(!this.player.isGhostMode){
+                    const pTileX=Math.floor(this.player.x/this.TILE_SIZE);
+                    const pTileY=Math.floor(this.player.y/this.TILE_SIZE);
+                    if(pTileX===x&&pTileY===y){
+                        this.player.energy=-1;
+                        this.damagePlayer();
+                    }
+                }
+            }
+        }
+    },
+    updateCollectibles: function(){for(let i=this.collectibles.length-1;i>=0;i--){const item=this.collectibles[i];const pTileX=Math.floor(this.player.x/this.TILE_SIZE),pTileY=Math.floor(this.player.y/this.TILE_SIZE);if(item.x===pTileX&&item.y===pTileY){let collected=true;switch(item.type){
+        case this.COLLECTIBLE_ENERGY_POTION:if(this.player.energy<this.player.maxEnergy)this.player.energy++;break;
+        case this.COLLECTIBLE_LIFE_POTION:this.player.lives++;break;case this.COLLECTIBLE_GHOST_MODE:this.player.isGhostMode=true;this.player.ghostModeTimer=7.0;break;
+        case this.COLLECTIBLE_ORB:this.player.orbs++;break;case this.WEAPON_SHOTGUN:case this.WEAPON_RAPID:case this.WEAPON_CLUSTER:case this.WEAPON_PLASMA:if(!this.player.inventory.includes(item.type))this.player.inventory.push(item.type);break;
+        default:collected=false;}if(collected)this.collectibles.splice(i,1);}}},
+    /**
+     * Gets the tile type at a given coordinate, abstracting away the current map (world vs. interior).
+     * @param {number} x - The tile X coordinate.
+     * @param {number} y - The tile Y coordinate.
+     * @returns {number} The tile type identifier.
+     */
+    getTileTypeAt:function(x,y){
+        if (this.currentState === this.STATE_INSIDE_MANSION) { if (x<0||x>=this.mansionMap[0].length||y<0||y>=this.mansionMap.length) return this.TILE_MANSION_WALL; return this.mansionMap[y][x]; }
+        if (this.currentState === this.STATE_INSIDE_CASTLE) { if (x<0||x>=this.castleMap[0].length||y<0||y>=this.castleMap.length) return this.TILE_MANSION_WALL; return this.castleMap[y][x]; }
+        if (this.currentState === this.STATE_INSIDE_HOUSE) { if (x<0||x>=this.houseMap[0].length||y<0||y>=this.houseMap.length) return this.TILE_MANSION_WALL; return this.houseMap[y][x]; }
+        if(x<0||x>=this.MAP_WIDTH_TILES||y<0||y>=this.MAP_HEIGHT_TILES)return this.TILE_WATER;
+        return this.map[y][x];
+    },
+    /**
+     * Checks if a given tile type is solid (blocks movement).
+     * @param {number} t - The tile type identifier.
+     * @returns {boolean} True if the tile is solid.
+     */
+    isTileSolid:function(t){return t===this.TILE_TREE||t===this.TILE_WATER||t===this.TILE_ROCK||t===this.TILE_MANSION_EXT_WALL||t===this.TILE_CASTLE_EXT_WALL||t===this.TILE_HOUSE_EXT_WALL||t===this.TILE_MANSION_WALL||t===this.TILE_MANSION_STAIRS||t===this.TILE_MANSION_PAINTING;},
+    /**
+     * Checks if a tile position is blocked for an enemy, including player-placed walls.
+     * @param {number} tileX - The tile X coordinate.
+     * @param {number} tileY - The tile Y coordinate.
+     * @returns {boolean} True if the position is blocked.
+     */
+    isPositionBlockedForEnemy: function(tileX, tileY) {if(this.isTileSolid(this.getTileTypeAt(tileX,tileY)))return true;for(const wall of this.walls){if(wall.x===tileX&&wall.y===tileY)return true;}return false;},
+    /**
+     * Updates the camera position to follow the player, clamping it to the map boundaries.
+     */
+    updateCamera:function(){
+        const isInside=this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE;
+        if (isInside) { this.camera.x = 0; this.camera.y = 0; return; } // Camera is fixed inside
+        this.camera.x=this.player.x-this.VIEWPORT_WIDTH_PX/2;this.camera.y=this.player.y-this.VIEWPORT_HEIGHT_PX/2;
+        this.camera.x=Math.max(0,Math.min(this.camera.x,this.MAP_WIDTH_PX-this.VIEWPORT_WIDTH_PX));
+        this.camera.y=Math.max(0,Math.min(this.camera.y,this.MAP_HEIGHT_PX-this.VIEWPORT_HEIGHT_PX));
+    },
+    checkGhostCollection:function(){if(this.currentState!==this.STATE_PLAYING)return;const pX=Math.floor(this.player.x/this.TILE_SIZE),pY=Math.floor(this.player.y/this.TILE_SIZE);for(let i=this.ghosts.length-1;i>=0;i--){const c=this.ghosts[i];if(!c.collected&&c.x===pX&&c.y===pY){c.collected=true;this.ghostsCollected++;this.createGhostCaptureEffect(c.x*this.TILE_SIZE,c.y*this.TILE_SIZE);}}},
+    checkLevelCompletion:function(){if(this.ghostsCollected>=this.GHOSTS_PER_LEVEL&&this.currentState===this.STATE_PLAYING)this.setGameState(this.STATE_NEXT_LEVEL_TRANSITION);},
+    /**
+     * The main render function, called every frame.
+     */
+    render:function(){
+        // Clear the canvas
+        this.ctx.fillStyle='#303030';this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height);
+        
+        const isPlayableState=this.currentState===this.STATE_PLAYING||this.currentState===this.STATE_PLAYER_DEATH_ANIM||this.currentState===this.STATE_NEXT_LEVEL_TRANSITION;
+        const isInsideState=this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE;
+
+        // Delegate rendering based on game state
+        switch(this.currentState){
+            case this.STATE_START_SCREEN:this.renderStartScreen();break;
+            case this.STATE_GAME_OVER:this.renderGameOverScreen();break;
+            default:
+                if(isPlayableState) this.renderGameWorld();
+                else if(isInsideState){
+                    if(this.currentState===this.STATE_INSIDE_MANSION)this.renderInterior(this.mansionMap);
+                    else if(this.currentState===this.STATE_INSIDE_CASTLE)this.renderInterior(this.castleMap);
+                    else if(this.currentState===this.STATE_INSIDE_HOUSE)this.renderInterior(this.houseMap);
+                }
+                this.renderPlayer();
+                if(isPlayableState) this.renderOverlays();
+                this.renderUI();
+                if(isPlayableState) this.renderMinimap();
+                this.renderJoystickAndItems();
+                if(this.levelMessageTimer>0) this.renderLevelMessage();
+                if(this.allyMessageTimer>0) this.renderAllyMessage();
+                if(this.currentState===this.STATE_NEXT_LEVEL_TRANSITION) this.renderNextLevelMessage();
+                break;
+        }
+    },
+    /**
+     * Renders the main game world (tiles, static objects).
+     */
+    renderGameWorld:function(){
+        this.ctx.save();
+        this.ctx.translate(this.ui.viewportX,this.ui.viewportY);
+        // Clip rendering to the viewport area
+        this.ctx.beginPath();this.ctx.rect(0,0,this.VIEWPORT_WIDTH_PX,this.VIEWPORT_HEIGHT_PX);this.ctx.clip();
+        
+        // Calculate the range of tiles visible in the camera (culling)
+        const sX=Math.floor(this.camera.x/this.TILE_SIZE),sY=Math.floor(this.camera.y/this.TILE_SIZE),eX=Math.ceil((this.camera.x+this.VIEWPORT_WIDTH_PX)/this.TILE_SIZE),eY=Math.ceil((this.camera.y+this.VIEWPORT_HEIGHT_PX)/this.TILE_SIZE);
+        
+        // Render tiles
+        for(let y=sY;y<eY;y++){for(let x=sX;x<eX;x++){
+            if(x<0||x>=this.MAP_WIDTH_TILES||y<0||y>=this.MAP_HEIGHT_TILES)continue;
+            const tT=this.map[y][x],dX=Math.floor(x*this.TILE_SIZE-this.camera.x),dY=Math.floor(y*this.TILE_SIZE-this.camera.y);
+            
+            // Draw grass under buildings
+            if(tT>=this.TILE_MANSION_EXT_WALL&&tT<=this.TILE_HOUSE_EXT_DOOR){this.ctx.drawImage(this.assets.grass,dX,dY);continue;}
+            
+            this.ctx.drawImage(this.assets.grass,dX,dY);
+            if(tT===this.TILE_WATER)this.ctx.drawImage(this.assets.waterFrames[this.animation.waterFrame],dX,dY);
+            else if(tT===this.TILE_TREE)this.ctx.drawImage(this.assets.tree,dX,dY);
+            else if(tT===this.TILE_ROCK)this.ctx.drawImage(this.assets.rock,dX,dY);
+        }}
+        
+        // Render buildings
+        if(this.mansion){const dX=Math.floor(this.mansion.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(this.mansion.y*this.TILE_SIZE-this.camera.y);this.ctx.drawImage(this.assets.mansion,dX,dY);}
+        if(this.castle){const dX=Math.floor(this.castle.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(this.castle.y*this.TILE_SIZE-this.camera.y);this.ctx.drawImage(this.assets.castle,dX,dY);}
+        if(this.house){const dX=Math.floor(this.house.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(this.house.y*this.TILE_SIZE-this.camera.y);this.ctx.drawImage(this.assets.house,dX,dY);}
+
+        // Render placed objects
+        for(const t of this.turrets){const dX=Math.floor(t.x-this.camera.x-t.width/2),dY=Math.floor(t.y-this.camera.y-t.height/2);this.ctx.drawImage(this.assets.turret,dX,dY,t.width,t.height);}
+        for(const w of this.walls){const dX=Math.floor(w.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(w.y*this.TILE_SIZE-this.camera.y);if(dX+this.TILE_SIZE>0&&dX<this.VIEWPORT_WIDTH_PX&&dY+this.TILE_SIZE>0&&dY<this.VIEWPORT_HEIGHT_PX){this.ctx.globalAlpha=w.lifespan<2?w.lifespan/2:1;this.ctx.drawImage(this.assets.player_wall,dX,dY);this.ctx.globalAlpha=1;}}
+        for(const b of this.bombs){const dX=Math.floor(b.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(b.y*this.TILE_SIZE-this.camera.y);if(dX+this.TILE_SIZE>0&&dX<this.VIEWPORT_WIDTH_PX&&dY+this.TILE_SIZE>0&&dY<this.VIEWPORT_HEIGHT_PX){if(b.timer<1&&Math.floor(b.timer*10)%2===0){}else{this.ctx.drawImage(this.assets.bomb,dX,dY);}}}
+        
+        // Render decorations and collectibles
+        for(const d of this.skulls){const dX=Math.floor(d.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(d.y*this.TILE_SIZE-this.camera.y);if(dX+this.TILE_SIZE>0&&dX<this.VIEWPORT_WIDTH_PX&&dY+this.TILE_SIZE>0&&dY<this.VIEWPORT_HEIGHT_PX)this.ctx.drawImage(this.assets.skull,dX,dY);}
+        for(const c of this.ghosts){if(!c.collected){const dX=Math.floor(c.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(c.y*this.TILE_SIZE-this.camera.y);if(dX+this.TILE_SIZE>0&&dX<this.VIEWPORT_WIDTH_PX&&dY+this.TILE_SIZE>0&&dY<this.VIEWPORT_HEIGHT_PX)this.ctx.drawImage(this.assets.ghostFrames[this.animation.ghostFrame],dX,dY);}}
+        for(const item of this.collectibles){const dX=Math.floor(item.x*this.TILE_SIZE-this.camera.x)+this.TILE_SIZE/2,dY=Math.floor(item.y*this.TILE_SIZE-this.camera.y)+this.TILE_SIZE/2;let asset,size=this.TILE_SIZE;if(item.type===this.COLLECTIBLE_ENERGY_POTION)asset=this.assets.potionEnergy;else if(item.type===this.COLLECTIBLE_LIFE_POTION)asset=this.assets.potionLife;else if(item.type===this.COLLECTIBLE_GHOST_MODE)asset=this.assets.ghostModePowerup;else if(item.type===this.COLLECTIBLE_ORB){asset=this.assets.orb;size=16;}else if(item.type>=this.WEAPON_SHOTGUN&&item.type<=this.WEAPON_PLASMA)asset=this.assets['gun'+Object.keys(this).find(key=>this[key]===item.type).replace('WEAPON_','').toLowerCase()];if(asset)this.ctx.drawImage(asset,dX-size/2,dY-size/2,size,size);}
+        
+        // Render zombies with spawn/death effects
+        for(const z of this.zombies){const dX=Math.floor(z.x-this.camera.x-z.width/2),dY=Math.floor(z.y-this.camera.y-z.height/2);if(dX+z.width>0&&dX<this.VIEWPORT_WIDTH_PX&&dY+z.height>0&&dY<this.VIEWPORT_HEIGHT_PX){const frameIndexOffset=z.isAttacking?1:0;const fIdx=(z.walkFrame*2)+frameIndexOffset+(z.eyeDrawStyle*8);
+            if(z.isDying){
+                if (z.deathType !== 'scatter') { // Fade out for non-scatter deaths
+                    this.ctx.globalAlpha=z.deathTimer/0.5;
+                    this.ctx.drawImage(this.assets.zombieFrames[fIdx],dX,dY);
+                    this.ctx.globalAlpha=1.0;
+                }
+            }else if(z.isSpawning){const alpha=1.0-(z.spawnTimer/this.animation.zombieSpawnEffectDuration);this.ctx.globalAlpha=alpha;this.ctx.drawImage(this.assets.zombieFrames[fIdx],dX,dY);this.ctx.globalAlpha=1.0;const effectRadius=(z.spawnTimer/this.animation.zombieSpawnEffectDuration)*(this.TILE_SIZE/2);this.ctx.strokeStyle='#00FF00';this.ctx.lineWidth=2;this.ctx.beginPath();this.ctx.arc(dX+z.width/2,dY+z.height/2,effectRadius,0,Math.PI*2);this.ctx.stroke();}else{this.ctx.drawImage(this.assets.zombieFrames[fIdx],dX,dY);}}}
+        this.ctx.restore();
+    },
+    /**
+     * Renders an interior map (mansion, castle, house).
+     * @param {Array<Array<number>>} interiorMap - The 2D array representing the interior layout.
+     */
+    renderInterior: function(interiorMap) {
+        this.ctx.save();
+        this.ctx.translate(this.ui.viewportX, this.ui.viewportY);
+        this.ctx.beginPath(); this.ctx.rect(0, 0, this.VIEWPORT_WIDTH_PX, this.VIEWPORT_HEIGHT_PX); this.ctx.clip();
+        
+        // Find painting position to draw it on top of the wall
+        let paintingPos = null;
+        for (let y=0;y<interiorMap.length&&!paintingPos;y++){for(let x=0;x<interiorMap[0].length&&!paintingPos;x++){if(interiorMap[y][x]===this.TILE_MANSION_PAINTING)paintingPos={x,y};}}
+
+        // Render interior tiles
+        for (let y=0;y<interiorMap.length;y++){for (let x=0;x<interiorMap[0].length;x++){
+            const tileType=interiorMap[y][x];const dX=x*this.TILE_SIZE;const dY=y*this.TILE_SIZE;
+            if (tileType===this.TILE_MANSION_PAINTING){this.ctx.drawImage(this.assets.mansion_wall, dX, dY);continue;}
+            let asset=this.assets.mansion_floor;
+            switch(tileType){
+                case this.TILE_MANSION_WALL: asset=this.assets.mansion_wall; break;
+                case this.TILE_MANSION_DOOR: asset=this.assets.mansion_door; break;
+                case this.TILE_MANSION_STAIRS: asset=this.assets.mansion_stairs; break;
+            }
+            if (asset) this.ctx.drawImage(asset, dX, dY);
+        }}
+        
+        // Render interior collectibles
+        let currentInteriorType='';
+        if(this.currentState===this.STATE_INSIDE_MANSION)currentInteriorType='mansion';
+        else if(this.currentState===this.STATE_INSIDE_CASTLE)currentInteriorType='castle';
+        else if(this.currentState===this.STATE_INSIDE_HOUSE)currentInteriorType='house';
+        for(const item of this.interiorCollectibles){if(item.interiorType===currentInteriorType){const dX=item.x*this.TILE_SIZE+this.TILE_SIZE/2;const dY=item.y*this.TILE_SIZE+this.TILE_SIZE/2;let asset,size=this.TILE_SIZE;
+            if(item.type===this.COLLECTIBLE_ORB){asset=this.assets.orb;size=16;}
+            else if(item.type===this.COLLECTIBLE_ENERGY_POTION) asset=this.assets.potionEnergy;
+            else if(item.type===this.COLLECTIBLE_LIFE_POTION) asset=this.assets.potionLife;
+            else if(item.type===this.COLLECTIBLE_CASTLE_KEY) asset=this.assets.castle_key;
+            else if(typeof item.type==='number' && item.type>=this.WEAPON_SHOTGUN&&item.type<=this.WEAPON_PLASMA){asset=this.assets['gun'+Object.keys(this).find(key=>this[key]===item.type).replace('WEAPON_','').toLowerCase()];}
+            else if(item.type===this.SHOP_FULL_MAP){asset=this.assets.shop_map;}
+            if(asset){this.ctx.drawImage(asset,dX-size/2,dY-size/2,size,size);}}}
+        
+        // Draw painting on top
+        if (paintingPos) this.ctx.drawImage(this.assets.mansion_painting, paintingPos.x * this.TILE_SIZE, paintingPos.y * this.TILE_SIZE);
+        this.ctx.restore();
+    },
+    /**
+     * Renders the player character with animations and effects.
+     */
+    renderPlayer:function(){
+        this.ctx.save();
+        this.ctx.translate(this.ui.viewportX,this.ui.viewportY);
+        const sX=Math.floor(this.player.x-this.camera.x-this.player.width/2),sY=Math.floor(this.player.y-this.camera.y-this.player.height/2);
+        
+        if(this.currentState===this.STATE_PLAYER_DEATH_ANIM){
+            const progress=this.player.deathAnimTimer/2.0;this.ctx.globalAlpha=progress;
+            const bBFIdx=this.player.isMoving?this.player.walkFrame:this.player.idleFrame;
+            let sBIdx=this.player.isMoving?(4+bBFIdx):bBFIdx;let fIdx=sBIdx+(this.player.eyeDrawStyle*8);
+            this.ctx.drawImage(this.assets.reaperFrames[fIdx],sX,sY);this.ctx.globalAlpha=1.0;
+            // Death particle effect
+            this.ctx.fillStyle="#FF0000";for(let i=0;i<20;i++){const pX=sX+this.player.width/2+(this.random()-0.5)*50*(1-progress);const pY=sY+this.player.height/2+(this.random()-0.5)*50*(1-progress);this.ctx.globalAlpha=this.random()*progress;this.ctx.fillRect(pX,pY,2,2);}this.ctx.globalAlpha=1.0;
+        } else {
+            if(this.player.isGhostMode) this.ctx.globalAlpha=0.6;
+            // Flicker effect when invincible
+            if(this.player.invincibleTimer>0&&Math.floor(this.player.invincibleTimer*10)%2===0){}
+            else{
+                let bBFIdx=this.player.isMoving?this.player.walkFrame:this.player.idleFrame;
+                let sBIdx=this.player.isMoving?(4+bBFIdx):bBFIdx;
+                let fIdx=sBIdx+(this.player.eyeDrawStyle*8);
+                this.ctx.drawImage(this.assets.reaperFrames[fIdx],sX,sY);
+                if(this.player.invincibleTimer>0){
+                    this.ctx.globalAlpha=this.player.isGhostMode?0.3:0.5;
+                    this.ctx.fillStyle='red';
+                    this.ctx.fillRect(sX,sY,this.player.width,this.player.height);
+                }
+            }
+            this.ctx.globalAlpha=1.0;
+        }
+        this.ctx.restore();
+    },
+    /**
+     * Renders dynamic overlays like enemies, projectiles, and particles.
+     */
+    renderOverlays: function(){
+        this.ctx.save(); this.ctx.translate(this.ui.viewportX,this.ui.viewportY);
+        for(const t of this.teleporters){const dX=Math.floor(t.x*this.TILE_SIZE-this.camera.x),dY=Math.floor(t.y*this.TILE_SIZE-this.camera.y);if(this.player.teleportCooldown>0&&Math.floor(this.player.teleportCooldown*10)%2===0)this.ctx.globalAlpha=0.5;this.ctx.drawImage(this.assets.teleporterFrames[this.animation.teleporterFrame],dX,dY);this.ctx.globalAlpha=1;}
+        for(const s of this.slimes){const dX=Math.floor(s.x-this.camera.x-s.width/2),dY=Math.floor(s.y-this.camera.y-s.height/2);if(s.isDying){this.ctx.globalAlpha=s.deathTimer/0.5;this.ctx.drawImage(this.assets.slimeFrames[this.animation.slimeFrame],dX,dY,s.width,s.height);this.ctx.globalAlpha=1.0;}else{this.ctx.drawImage(this.assets.slimeFrames[this.animation.slimeFrame],dX,dY,s.width,s.height);}}
+        for(const s of this.skeletons){const dX=Math.floor(s.x-this.camera.x-s.width/2),dY=Math.floor(s.y-this.camera.y-s.height/2);let p=1;if(s.state==='dig_up')p=1-s.animTimer;else if(s.state==='dig_down')p=s.animTimer;this.ctx.save();this.ctx.beginPath();this.ctx.rect(dX,dY,s.width,s.height*p);this.ctx.clip();const frameIndex=s.walkFrame*2+(s.state==='attacking'?1:0);this.ctx.drawImage(this.assets.skeletonFrames[frameIndex],dX,dY);this.ctx.restore();}
+        for(const p of this.boneParticles){this.ctx.save();this.ctx.translate(p.x-this.camera.x,p.y-this.camera.y);this.ctx.rotate(p.angle);this.ctx.fillStyle=`rgba(224,224,224,${p.lifetime})`;this.ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);this.ctx.restore();}
+        for(const p of this.projectiles){const dX=Math.floor(p.x-this.camera.x),dY=Math.floor(p.y-this.camera.y);if(p.isShotgunPellet){this.ctx.fillStyle='#C0C0C0';this.ctx.fillRect(dX-p.width/2,dY-p.height/2,p.width,p.height);}else if(p.isFireball){this.ctx.drawImage(this.assets.fireball,dX-p.width/2,dY-p.height/2,p.width,p.height);}else{this.ctx.save();this.ctx.translate(dX,dY);this.ctx.rotate(Math.atan2(p.vy,p.vx)-Math.PI/2);this.ctx.drawImage(p.isPlasma?this.assets.plasmaRing:this.assets.lightning,-p.width/2,-p.height/2,p.width,p.height);this.ctx.restore();}}
+        for(const b of this.bats){const dX=Math.floor(b.x-this.camera.x-b.width/2),dY=Math.floor(b.y-this.camera.y-b.height/2);this.ctx.drawImage(this.assets.batFrames[this.animation.batFrame],dX,dY,b.width,b.height);}
+        for(const o of this.ogres){const dX=Math.floor(o.x-this.camera.x-o.width/2),dY=Math.floor(o.y-this.camera.y-o.height/2);if(o.isDying){continue;}else if(o.invincibleTimer>0&&Math.floor(o.invincibleTimer*10)%2==0){}else{const fIdx=(o.animFrame*2)+(o.isAttacking?1:0);this.ctx.drawImage(this.assets.ogreFrames[fIdx],dX,dY,o.width,o.height);}}
+        for(const g of this.gargoyles){const dX=Math.floor(g.x-this.camera.x-g.width/2),dY=Math.floor(g.y-this.camera.y-g.height/2);if(g.isDying){continue;}else if(g.invincibleTimer>0&&Math.floor(g.invincibleTimer*10)%2==0){}else{const fIdx=(g.animFrame*2)+(g.isAttacking?1:0);this.ctx.drawImage(this.assets.gargoyleFrames[fIdx],dX,dY,g.width,g.height);}}
+        for(const d of this.dragons){const dX=Math.floor(d.x-this.camera.x-d.width/2),dY=Math.floor(d.y-this.camera.y-d.height/2);if(d.isDying){this.ctx.globalAlpha=d.deathTimer/2.5;if(Math.floor(d.deathTimer*10)%2==0)this.ctx.drawImage(this.assets.dragonFrames[d.animFrame],dX,dY,d.width,d.height);this.ctx.globalAlpha=1.0;}else if(d.invincibleTimer>0&&Math.floor(d.invincibleTimer*10)%2==0){}else{this.ctx.drawImage(this.assets.dragonFrames[d.animFrame],dX,dY,d.width,d.height);}}
+        for(const p of this.smokeParticles){this.ctx.fillStyle=`rgba(128,128,128,${p.alpha*p.lifetime/0.8})`;this.ctx.beginPath();this.ctx.arc(p.x-this.camera.x,p.y-this.camera.y,p.size*(1-p.lifetime/0.8),0,Math.PI*2);this.ctx.fill();}
+        this.ctx.fillStyle='#00ffff';for(const p of this.ghostParticles){const dX=Math.floor(p.x-this.camera.x),dY=Math.floor(p.y-this.camera.y);this.ctx.globalAlpha=p.lifetime/1.0;this.ctx.fillRect(dX-1,dY-1,2,2);}this.ctx.globalAlpha=1.0;
+        for (const p of this.scatterParticles) { this.ctx.fillStyle = `rgba(${p.color}, ${p.lifetime / 1.0})`; this.ctx.fillRect(p.x - this.camera.x - p.size/2, p.y - this.camera.y - p.size/2, p.size, p.size); }
+        this.ctx.restore();
+    },
+    /**
+     * Renders the main heads-up display (HUD).
+     */
+    renderUI:function(){
+        this.ctx.fillStyle='#FFFFFF';this.ctx.font="14px 'Courier New',monospace";this.ctx.textAlign='left';this.ctx.textBaseline='top';
+        this.ctx.fillText(`Lives: ${this.player.lives}`,10,10);
+        this.ctx.fillStyle=this.player.energy<=1?'#FF4500':'#FFFFFF'; // Change color when energy is low
+        this.ctx.fillText(`Energy: ${this.player.energy}/${this.player.maxEnergy}`,10,10+16);
+        this.ctx.fillStyle='#FFFF00';this.ctx.fillText(`Orbs: ${this.player.orbs}`,10,10+32);
+        this.ctx.fillStyle='#FFFFFF';this.ctx.fillText(`Level: ${this.level}`,10,10+48);
+        this.ctx.fillText(`Ghosts: ${this.ghostsCollected}/${this.GHOSTS_PER_LEVEL}`,10,10+64);
+        
+        const b=this.ui.restartButton;
+        this.ctx.strokeStyle='#FFFFFF';this.ctx.strokeRect(b.x,b.y,b.width,b.height);
+        this.ctx.textAlign='center';this.ctx.textBaseline='middle';this.ctx.fillText(b.text,b.x+b.width/2,b.y+b.height/2);
+    },
+    /**
+     * Renders the minimap if it has been revealed.
+     */
+    renderMinimap: function() {
+        if(!this.mapRevealed||this.currentState!==this.STATE_PLAYING)return;
+        const mapSize=90, mapX=this.canvas.width-10-mapSize, mapY=65;
+        const mapW=mapSize, mapH=mapSize;
+        const cellW=mapW/this.MAP_WIDTH_TILES, cellH=mapH/this.MAP_HEIGHT_TILES;
+        
+        this.ctx.fillStyle='rgba(0,0,0,0.6)'; this.ctx.fillRect(mapX-2,mapY-2,mapW+4,mapH+4);
+        this.ctx.strokeStyle='#FFFFFF'; this.ctx.lineWidth=1; this.ctx.strokeRect(mapX-2,mapY-2,mapW+4,mapH+4);
+        
+        for(let y=0;y<this.MAP_HEIGHT_TILES;y++){for(let x=0;x<this.MAP_WIDTH_TILES;x++){
+            const tile=this.map[y][x];
+            if(tile===this.TILE_GRASS)this.ctx.fillStyle='#2c3e50';
+            else if(tile===this.TILE_WATER)this.ctx.fillStyle='#8e44ad';
+            else if(tile===this.TILE_TREE||tile===this.TILE_ROCK)this.ctx.fillStyle='#5d4037';
+            else if(tile>=this.TILE_MANSION_EXT_WALL&&tile<=this.TILE_HOUSE_EXT_DOOR)this.ctx.fillStyle='#1a1a1a';
+            else this.ctx.fillStyle='#000';
+            this.ctx.fillRect(mapX+x*cellW,mapY+y*cellH,cellW+0.5,cellH+0.5);
+        }}
+        const pX=mapX+(this.player.x/this.MAP_WIDTH_PX)*mapW;const pY=mapY+(this.player.y/this.MAP_HEIGHT_PX)*mapH;
+        this.ctx.fillStyle='#FF0000';this.ctx.fillRect(pX-1,pY-1,3,3); // Player position
+    },
+    /**
+     * Renders the joystick and item selection UI at the bottom of the screen.
+     */
+    renderJoystickAndItems:function(){
+        const isPlayable=this.currentState===this.STATE_PLAYING||this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE;
+        if(!isPlayable)return;
+        
+        // Draw Joystick
+        this.ctx.lineWidth=3;this.ctx.strokeStyle='rgba(255,255,0,0.7)';
+        this.ctx.beginPath();this.ctx.arc(this.joystick.baseX,this.joystick.baseY,this.joystick.baseRadius,0,Math.PI*2);this.ctx.stroke();
+        this.ctx.beginPath();this.ctx.arc(this.joystick.knobX,this.joystick.knobY,this.joystick.knobRadius,0,Math.PI*2);this.ctx.stroke();
+        
+        // Draw Item UI
+        const ib=this.ui.itemBox,la=this.ui.leftArrow,ra=this.ui.rightArrow,ub=this.ui.useButton;
+        this.ctx.strokeRect(ib.x,ib.y,ib.w,ib.h);this.ctx.strokeRect(la.x,la.y,la.w,la.h);this.ctx.strokeRect(ra.x,ra.y,ra.w,ra.h);
+        this.ctx.fillStyle='rgba(255,255,0,0.7)';this.ctx.font="bold 24px 'Courier New',monospace";this.ctx.textAlign='center';this.ctx.textBaseline='middle';
+        this.ctx.fillText('<',la.x+la.w/2,la.y+la.h/2);this.ctx.fillText('>',ra.x+ra.w/2,ra.y+ra.h/2);
+        
+        // Logic to display the currently selected item
+        const shopItems=[this.SHOP_HEALER,this.SHOP_GHOST_MODE,this.SHOP_AXE,this.SHOP_TURRET,this.SHOP_SHOTGUN,this.SHOP_RAPID,this.SHOP_CLUSTER,this.SHOP_PLASMA,this.SHOP_FULL_MAP,this.SHOP_SPEED_POTION,this.SHOP_WALL,this.SHOP_TELEPORT,this.SHOP_BOMB];
+        const availableShopItems=shopItems.filter(item=>{if((item===this.SHOP_FULL_MAP&&this.mapRevealed)||(item===this.SHOP_TELEPORT&&this.teleporters.length>=2)||(item===this.SHOP_SHOTGUN&&this.player.inventory.includes(this.WEAPON_SHOTGUN))||(item===this.SHOP_RAPID&&this.player.inventory.includes(this.WEAPON_RAPID))||(item===this.SHOP_CLUSTER&&this.player.inventory.includes(this.WEAPON_CLUSTER))||(item===this.SHOP_PLASMA&&this.player.inventory.includes(this.WEAPON_PLASMA)))return false;return true;});
+        const selectableItems=[...this.player.inventory,...availableShopItems];
+        const currentItem=selectableItems[this.player.currentItemIndex];
+        let itemAsset,itemText="",costText="",buttonText="USE";
+        
+        if(typeof currentItem==='number'){ // It's a weapon from inventory
+            buttonText="SHOOT";
+            const weaponName=Object.keys(this).find(key=>this[key]===currentItem).replace('WEAPON_','');
+            if(currentItem===this.WEAPON_DEFAULT){itemText="SCYTHE";costText="DEFAULT";}else{itemText=`OWNED ${weaponName}`;costText="";}
+            if(currentItem===this.WEAPON_DEFAULT)itemAsset=this.assets.lightning;else itemAsset=this.assets['gun'+weaponName.toLowerCase()];
+        }
+        else{ // It's a shop item
+            buttonText="BUY";
+            if(currentItem===this.SHOP_HEALER){itemAsset=this.assets.potionEnergy;itemText="HEALER";costText="5 ORBS";}
+            else if(currentItem===this.SHOP_GHOST_MODE){itemAsset=this.assets.ghostModePowerup;itemText="GHOST";costText="15 ORBS";}
+            else if(currentItem===this.SHOP_AXE){itemAsset=this.assets.axe;itemText="AXE";costText="5 ORBS";}
+            else if(currentItem===this.SHOP_TURRET){itemAsset=this.assets.turret;itemText="TURRET";costText="10 ORBS";}
+            else if(currentItem===this.SHOP_SHOTGUN){itemAsset=this.assets.gunshotgun;itemText="SHOTGUN";costText="1 ORB";}
+            else if(currentItem===this.SHOP_RAPID){itemAsset=this.assets.gunrapid;itemText="RAPID GUN";costText="1 ORB";}
+            else if(currentItem===this.SHOP_CLUSTER){itemAsset=this.assets.guncluster;itemText="CLUSTER";costText="1 ORB";}
+            else if(currentItem===this.SHOP_PLASMA){itemAsset=this.assets.gunplasma;itemText="PLASMA";costText="1 ORB";}
+            else if(currentItem===this.SHOP_FULL_MAP){itemAsset=this.assets.shop_map;itemText="FULL MAP";costText="1 ORB";}
+            else if(currentItem===this.SHOP_SPEED_POTION){itemAsset=this.assets.shop_speed_potion;itemText="SPEED+";costText="1 ORB";}
+            else if(currentItem===this.SHOP_WALL){itemAsset=this.assets.shop_wall;itemText="WALL";costText="1 ORB";}
+            else if(currentItem===this.SHOP_TELEPORT){itemAsset=this.assets.shop_teleport;itemText="TELEPORT";costText="1 ORB";}
+            else if(currentItem===this.SHOP_BOMB){itemAsset=this.assets.bomb;itemText="BOMB";costText="1 ORB";}
+        }
+        
+        if(itemAsset)this.ctx.drawImage(itemAsset,ib.x+5,ib.y+5,ib.w-10,ib.h-10);
+        this.ctx.font="bold 12px 'Courier New',monospace";
+        this.ctx.textAlign='center';
+        this.ctx.fillText(itemText,ib.x+ib.w/2,ib.y-24);
+        this.ctx.fillText(costText,ib.x+ib.w/2,ib.y-12);
+
+        // Draw "USE" button, changing color if on cooldown
+        this.ctx.strokeStyle=this.shootTimer>0?'rgba(128,128,0,0.7)':'rgba(255,255,0,0.7)';
+        this.ctx.strokeRect(ub.x,ub.y,ub.w,ub.h);
+        this.ctx.fillStyle=this.shootTimer>0||this.currentState!==this.STATE_PLAYING?'rgba(128,128,0,0.7)':'rgba(255,255,0,0.7)';
+        this.ctx.font="bold 16px 'Courier New',monospace";
+        this.ctx.fillText(buttonText,ub.x+ub.w/2,ub.y+ub.h/2);
+    },
+    renderLevelMessage:function(){this.ctx.save();this.ctx.globalAlpha=Math.sin(this.levelMessageTimer/2.0*Math.PI);this.ctx.fillStyle='#FFFF00';this.ctx.font="bold 30px 'Courier New',monospace";this.ctx.textAlign='center';this.ctx.textBaseline='middle';this.ctx.fillText(this.levelMessageText,this.canvas.width/2,this.canvas.height/2);this.ctx.restore();},
+    renderAllyMessage:function(){this.ctx.save();this.ctx.globalAlpha=Math.sin(this.allyMessageTimer/2.0*Math.PI);this.ctx.fillStyle='#39ff14';this.ctx.font="bold 24px 'Courier New',monospace";this.ctx.textAlign='center';this.ctx.textBaseline='middle';this.ctx.fillText(this.allyMessageText,this.canvas.width/2,this.canvas.height/2+40);this.ctx.restore();},
+    renderStartScreen:function(){this.ctx.fillStyle='#2c3e50';this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height);this.ctx.fillStyle='#FFFFFF';this.ctx.font="bold 24px 'Courier New',monospace";this.ctx.textAlign='center';this.ctx.textBaseline='top';this.ctx.fillText("REAPER'S GHOSTLY DUTY",this.canvas.width/2,this.canvas.height*0.15);this.ctx.save();this.ctx.rect(0,this.canvas.height*0.25,this.canvas.width,40);this.ctx.clip();this.ctx.font="16px 'Courier New',monospace";this.ctx.textAlign='left';this.ctx.textBaseline='top';const sY=this.canvas.height*0.26;const t1=this.introScroll.text[0];const t2=this.introScroll.text[1];const t1W=this.ctx.measureText(t1).width;this.ctx.fillText(t1,this.introScroll.x,sY);const gA=this.assets.ghostFrames[this.animation.ghostFrame];if(gA){this.ctx.drawImage(gA,this.introScroll.x+t1W+5,sY-2,this.introScroll.ghostImageWidth,this.introScroll.ghostImageWidth);}this.ctx.fillText(t2,this.introScroll.x+t1W+5+this.introScroll.ghostImageWidth+5,sY);this.ctx.restore();this.ctx.font="14px 'Courier New',monospace";this.ctx.textAlign='center';this.ctx.textBaseline='top';const i=["WASD or Arrow Keys or Joystick to Move.","[Q]/[E] or Arrows to switch item.","[SPACE] or USE to shoot/buy.","Collect ghosts to win!","Beware of Ogres and other horrors!","","TAP or PRESS ANY KEY TO START"];let yP=this.canvas.height*0.35;for(const l of i){this.ctx.fillText(l,this.canvas.width/2,yP);yP+=25;}if(this.assets.reaperFrames&&this.assets.reaperFrames.length>0)this.ctx.drawImage(this.assets.reaperFrames[0],this.canvas.width/2-this.TILE_SIZE/2,yP);},
+    renderGameOverScreen:function(){this.ctx.fillStyle='rgba(0,0,0,0.7)';this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height);this.ctx.fillStyle='#FF0000';this.ctx.font="bold 36px 'Courier New',monospace";this.ctx.textAlign='center';this.ctx.fillText("YOU ARE UNDEAD",this.canvas.width/2,this.canvas.height/2-30);this.ctx.fillStyle='#FFFFFF';this.ctx.font="20px 'Courier New',monospace";this.ctx.fillText("TAP TO RESTART YOUR DUTY",this.canvas.width/2,this.canvas.height/2+30);},
+    renderNextLevelMessage:function(){this.ctx.fillStyle='rgba(0,0,0,0.5)';this.ctx.fillRect(this.ui.viewportX,this.ui.viewportY,this.VIEWPORT_WIDTH_PX,this.VIEWPORT_HEIGHT_PX);this.ctx.fillStyle='#FFFF00';this.ctx.font="bold 30px 'Courier New',monospace";this.ctx.textAlign='center';this.ctx.textBaseline='middle';this.ctx.fillText("DUTY CONTINUES...",this.ui.viewportX+this.VIEWPORT_WIDTH_PX/2,this.ui.viewportY+this.VIEWPORT_HEIGHT_PX/2);},
+    addEventListeners:function(){this.canvas.addEventListener('touchstart',this.handleTouchStart.bind(this),{passive:false});this.canvas.addEventListener('touchmove',this.handleTouchMove.bind(this),{passive:false});this.canvas.addEventListener('touchend',this.handleTouchEnd.bind(this),{passive:false});this.canvas.addEventListener('touchcancel',this.handleTouchEnd.bind(this),{passive:false});this.canvas.addEventListener('mousedown',this.handleMouseDown.bind(this));this.canvas.addEventListener('mousemove',this.handleMouseMove.bind(this));this.canvas.addEventListener('mouseup',this.handleMouseUp.bind(this));this.canvas.addEventListener('mouseleave',this.handleMouseUp.bind(this));window.addEventListener('keydown',this.handleKeyDown.bind(this));window.addEventListener('keyup',this.handleKeyUp.bind(this));},
+    handleKeyDown:function(e){const isPlayable=this.currentState===this.STATE_PLAYING||this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE;if(isPlayable){if(e.code==='Space'||e.key===' '||e.code==='KeyQ'||e.code==='KeyE')e.preventDefault();const shopItems=[this.SHOP_HEALER,this.SHOP_GHOST_MODE,this.SHOP_AXE,this.SHOP_TURRET,this.SHOP_SHOTGUN,this.SHOP_RAPID,this.SHOP_CLUSTER,this.SHOP_PLASMA,this.SHOP_FULL_MAP,this.SHOP_SPEED_POTION,this.SHOP_WALL,this.SHOP_TELEPORT,this.SHOP_BOMB];const availableShopItems=shopItems.filter(item=>{if((item===this.SHOP_FULL_MAP&&this.mapRevealed)||(item===this.SHOP_TELEPORT&&this.teleporters.length>=2)||(item===this.SHOP_SHOTGUN&&this.player.inventory.includes(this.WEAPON_SHOTGUN))||(item===this.SHOP_RAPID&&this.player.inventory.includes(this.WEAPON_RAPID))||(item===this.SHOP_CLUSTER&&this.player.inventory.includes(this.WEAPON_CLUSTER))||(item===this.SHOP_PLASMA&&this.player.inventory.includes(this.WEAPON_PLASMA)))return false;return true;});const len=[...this.player.inventory,...availableShopItems].length;if(e.code==='KeyQ'){this.player.currentItemIndex=(this.player.currentItemIndex-1+len)%len;}
+        if(e.code==='KeyE'){this.player.currentItemIndex=(this.player.currentItemIndex+1)%len;}}this.keysPressed[e.code]=true;this.keysPressed[e.key]=true;if(this.currentState===this.STATE_START_SCREEN){this.startGame();}},
+    handleKeyUp:function(e){this.keysPressed[e.code]=false;this.keysPressed[e.key]=false;},
+    handleMouseDown:function(e){const r=this.canvas.getBoundingClientRect();this.processPointerDown(e.clientX-r.left,e.clientY-r.top,null);},
+    handleMouseMove:function(e){if(this.joystick.active&&this.joystick.touchId===null){const r=this.canvas.getBoundingClientRect();this.processPointerMove(e.clientX-r.left,e.clientY-r.top,null);}},
+    handleMouseUp:function(e){const r=this.canvas.getBoundingClientRect();const x=e.clientX-r.left,y=e.clientY-r.top;if(this.joystick.active&&this.joystick.touchId===null){this.processPointerUp(null);return;}this.handleScreenTap(x,y);},
+    handleTouchStart:function(e){e.preventDefault();for(let t of e.changedTouches){const r=this.canvas.getBoundingClientRect();this.processPointerDown(t.clientX-r.left,t.clientY-r.top,t.identifier);}},
+    handleTouchMove:function(e){e.preventDefault();for(let t of e.changedTouches){if(t.identifier===this.joystick.touchId){const r=this.canvas.getBoundingClientRect();this.processPointerMove(t.clientX-r.left,t.clientY-r.top,t.identifier);}}},
+    handleTouchEnd:function(e){e.preventDefault();for(let t of e.changedTouches){const r=this.canvas.getBoundingClientRect();const x=t.clientX-r.left,y=t.clientY-r.top;if(t.identifier===this.joystick.touchId){this.processPointerUp(t.identifier);continue;}this.handleScreenTap(x,y);}},
+    processPointerDown:function(x,y,id){const isPlayable=this.currentState===this.STATE_PLAYING||this.currentState===this.STATE_INSIDE_MANSION||this.currentState===this.STATE_INSIDE_CASTLE||this.currentState===this.STATE_INSIDE_HOUSE;if(!isPlayable)return;const la=this.ui.leftArrow,ra=this.ui.rightArrow,ub=this.ui.useButton;const shopItems=[this.SHOP_HEALER,this.SHOP_GHOST_MODE,this.SHOP_AXE,this.SHOP_TURRET,this.SHOP_SHOTGUN,this.SHOP_RAPID,this.SHOP_CLUSTER,this.SHOP_PLASMA,this.SHOP_FULL_MAP,this.SHOP_SPEED_POTION,this.SHOP_WALL,this.SHOP_TELEPORT,this.SHOP_BOMB];const availableShopItems=shopItems.filter(item=>{if((item===this.SHOP_FULL_MAP&&this.mapRevealed)||(item===this.SHOP_TELEPORT&&this.teleporters.length>=2)||(item===this.SHOP_SHOTGUN&&this.player.inventory.includes(this.WEAPON_SHOTGUN))||(item===this.SHOP_RAPID&&this.player.inventory.includes(this.WEAPON_RAPID))||(item===this.SHOP_CLUSTER&&this.player.inventory.includes(this.WEAPON_CLUSTER))||(item===this.SHOP_PLASMA&&this.player.inventory.includes(this.WEAPON_PLASMA)))return false;return true;});const len=[...this.player.inventory,...availableShopItems].length;
+        if(x>=la.x&&x<=la.x+la.w&&y>=la.y&&y<=la.y+la.h){this.player.currentItemIndex=(this.player.currentItemIndex-1+len)%len;return;}
+        if(x>=ra.x&&x<=ra.x+ra.w&&y>=ra.y&&y<=ra.y+ra.h){this.player.currentItemIndex=(this.player.currentItemIndex+1)%len;return;}
+        if(x>=ub.x&&x<=ub.x+ub.w&&y>=ub.y&&y<=ub.y+ub.h){this.useItem();return;}
+        const dX=x-this.joystick.baseX,dY=y-this.joystick.baseY;if(!this.joystick.active&&(dX*dX+dY*dY)<(this.joystick.baseRadius+20)*(this.joystick.baseRadius+20)){this.joystick.active=true;this.joystick.touchId=id;this.updateJoystickKnob(x,y);return;}
+        const b=this.ui.restartButton;if(x>=b.x&&x<=b.x+b.width&&y>=b.y&&y<=b.y+b.height){this.restartCurrentLevel();return;}},
+    processPointerMove:function(x,y,id){if(this.joystick.active&&this.joystick.touchId===id)this.updateJoystickKnob(x,y);},
+    processPointerUp:function(id){if(this.joystick.active&&this.joystick.touchId===id){this.joystick.active=false;this.joystick.touchId=null;this.joystick.knobX=this.joystick.baseX;this.joystick.knobY=this.joystick.baseY;this.joystick.inputX=0;this.joystick.inputY=0;}},
+    updateJoystickKnob:function(x,y){let dX=x-this.joystick.baseX,dY=y-this.joystick.baseY;const dist=Math.hypot(dX,dY);const mD=this.joystick.baseRadius-this.joystick.knobRadius/2;if(dist>mD){dX=(dX/dist)*mD;dY=(dY/dist)*mD;}this.joystick.knobX=this.joystick.baseX+dX;this.joystick.knobY=this.joystick.baseY+dY;if(dist>0){this.joystick.inputX=dX/mD;this.joystick.inputY=dY/mD;const iM=Math.hypot(this.joystick.inputX,this.joystick.inputY);if(iM>1){this.joystick.inputX/=iM;this.joystick.inputY/=iM;}}else{this.joystick.inputX=0;this.joystick.inputY=0;}},
+    handleScreenTap:function(x,y){if(this.currentState===this.STATE_START_SCREEN)this.startGame();else if(this.currentState===this.STATE_GAME_OVER)this.startGame();}
+};
+
+// Entry point for the game.
+window.onload=function(){Game.init();};
+</script>
+</body>
+</html>
