@@ -479,7 +479,64 @@ const Game = {
             ctx.fillStyle = clubColor; ctx.beginPath(); ctx.moveTo(w * 0.05, h * 0.2); ctx.quadraticCurveTo(-w*0.1, h*0.3, w*0.05, h*0.8); ctx.quadraticCurveTo(w*0.2, h*0.3, w*0.05, h*0.2); ctx.closePath(); ctx.fill(); // Club
             ctx.restore();
         };
-        const drawGargoyle=(ctx,w,h,frame,isAttacking)=>{ctx.clearRect(0,0,w,h);const bob=frame%2==0?0:2;ctx.fillStyle='#6c757d';ctx.fillRect(w*0.25,h*0.4+bob,w*0.5,h*0.5);ctx.fillStyle='#adb5bd';ctx.beginPath();ctx.arc(w*0.5,h*0.3+bob,w*0.2,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ff0000';ctx.fillRect(w*0.45,h*0.28+bob,w*0.1,w*0.1);ctx.fillStyle='#495057';const wingY=isAttacking?h*0.2:h*0.4;ctx.beginPath();ctx.moveTo(w*0.25,h*0.5+bob);ctx.lineTo(w*0.1,wingY);ctx.lineTo(w*0.25,wingY);ctx.closePath();ctx.fill();ctx.beginPath();ctx.moveTo(w*0.75,h*0.5+bob);ctx.lineTo(w*0.9,wingY);ctx.lineTo(w*0.75,wingY);ctx.closePath();ctx.fill();};
+        const drawGargoyle = (ctx, w, h, frame, isAttacking) => {
+            ctx.clearRect(0, 0, w, h);
+            const bob = (frame % 4 < 2) ? 0 : -1;
+            const rearBack = isAttacking ? -4 : 0;
+        
+            const stoneColor = '#607D8B', stoneShadow = '#455A64', stoneHighlight = '#90A4AE';
+            const eyeColor = '#B71C1C', crackColor = '#37474F';
+        
+            // Wings (Even BIGGER)
+            ctx.fillStyle = stoneShadow;
+            const wingTopY = isAttacking ? h * -0.1 : h * 0.1; // Higher peak
+            const wingMidY = isAttacking ? h * 0.5 : h * 0.4;
+            const wingBotY = isAttacking ? h * 0.7 : h * 0.6;
+            // Left Wing
+            ctx.beginPath();
+            ctx.moveTo(w * 0.25 + rearBack, h * 0.3 + bob); ctx.lineTo(w * -0.1, wingTopY + bob); ctx.lineTo(w * 0.0, wingMidY + bob); ctx.lineTo(w * 0.25 + rearBack, wingBotY + bob); ctx.closePath(); ctx.fill();
+            // Right Wing
+            ctx.beginPath();
+            ctx.moveTo(w * 0.75 + rearBack, h * 0.3 + bob); ctx.lineTo(w * 1.1, wingTopY + bob); ctx.lineTo(w * 1.0, wingMidY + bob); ctx.lineTo(w * 0.75 + rearBack, wingBotY + bob); ctx.closePath(); ctx.fill();
+        
+            ctx.fillStyle = stoneShadow;
+            ctx.fillRect(w * 0.2 + rearBack, h * 0.4 + bob, w * 0.2, h * 0.35);
+            ctx.fillRect(w * 0.15 + rearBack, h * 0.65 + bob, w * 0.2, h * 0.15);
+            ctx.fillRect(w * 0.35 + rearBack, h * 0.8 + bob, w * 0.2, h * 0.2);
+            ctx.fillRect(w * 0.55 + rearBack, h * 0.8 + bob, w * 0.2, h * 0.2);
+            ctx.fillRect(w * 0.2 + rearBack, h * 0.25 + bob, w * 0.6, h * 0.6);
+            ctx.fillStyle = stoneColor;
+            ctx.beginPath(); ctx.moveTo(w * 0.15 + rearBack, h * 0.4 + bob); ctx.lineTo(w * 0.3 + rearBack, h * 0.2 + bob); ctx.lineTo(w * 0.7 + rearBack, h * 0.2 + bob); ctx.lineTo(w * 0.85 + rearBack, h * 0.4 + bob); ctx.lineTo(w * 0.75 + rearBack, h * 0.8 + bob); ctx.lineTo(w * 0.25 + rearBack, h * 0.8 + bob); ctx.closePath(); ctx.fill();
+            ctx.fillStyle = stoneColor;
+            ctx.fillRect(w * 0.4 + rearBack, h * 0.15 + bob, w * 0.2, h * 0.2);
+            ctx.beginPath(); ctx.moveTo(w * 0.4 + rearBack, h * 0.15 + bob); ctx.lineTo(w * 0.35 + rearBack, h * 0.05 + bob); ctx.lineTo(w * 0.45 + rearBack, h * 0.15 + bob); ctx.closePath(); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(w * 0.6 + rearBack, h * 0.15 + bob); ctx.lineTo(w * 0.65 + rearBack, h * 0.05 + bob); ctx.lineTo(w * 0.55 + rearBack, h * 0.15 + bob); ctx.closePath(); ctx.fill();
+            ctx.fillStyle = stoneShadow;
+            ctx.fillRect(w * 0.4 + rearBack, h * 0.25 + bob, w * 0.2, h * 0.1);
+            ctx.fillStyle = eyeColor;
+            ctx.fillRect(w * 0.42 + rearBack, h * 0.25 + bob, 3, 3);
+            ctx.fillRect(w * 0.58 + rearBack - 3, h * 0.25 + bob, 3, 3);
+            
+            if (isAttacking) {
+                const punchLunge = 12;
+                ctx.fillStyle = stoneShadow; ctx.fillRect(w * 0.6 + punchLunge, h * 0.45 + bob, w * 0.3, w * 0.2);
+                ctx.fillStyle = stoneColor; ctx.fillRect(w * 0.5 + rearBack, h * 0.4 + bob, w * 0.2, w * 0.2); ctx.fillRect(w * 0.6, h * 0.45 + bob, w * 0.2, w * 0.2);
+                ctx.fillStyle = stoneHighlight; ctx.fillRect(w * 0.75 + punchLunge, h * 0.4 + bob, w * 0.2, w * 0.3);
+                ctx.fillStyle = crackColor; ctx.fillRect(w*0.5+rearBack, h*0.3+bob, 2, 8); ctx.fillRect(w*0.8+punchLunge, h*0.45+bob, 6, 2);
+            } else {
+                ctx.fillStyle = stoneColor; ctx.fillRect(w * 0.65 + rearBack, h * 0.35 + bob, w * 0.2, h * 0.25); ctx.fillRect(w * 0.7 + rearBack, h * 0.5 + bob, w * 0.15, h * 0.25);
+            }
+
+            for(let i = 0; i < 30; i++) {
+                const tx = (w * 0.15 + rearBack) + Math.random() * w * 0.7;
+                const ty = (h * 0.15 + bob) + Math.random() * h * 0.8;
+                if (ctx.getImageData(tx,ty,1,1).data[0] === 96) {
+                     ctx.fillStyle = Math.random() < 0.5 ? stoneHighlight : stoneShadow;
+                     ctx.fillRect(tx, ty, 1, 1);
+                }
+            }
+        };
+
         const drawSkeleton=(ctx,w,h,frame,isAttacking)=>{ctx.clearRect(0,0,w,h);const bob=(frame===1||frame===3)?1:0;const boneColor='#e0e0e0';ctx.fillStyle=boneColor;ctx.fillRect(w*0.4,h*0.4+bob,w*0.2,h*0.3);const headX=w*0.5;const headY=h*0.25+bob;const headW=w*0.5;const headH=h*0.25;ctx.beginPath();ctx.arc(headX,headY,headW/2,Math.PI,0);ctx.rect(headX-headW/2,headY,headW,headH);ctx.fill();ctx.fillStyle='#000';ctx.fillRect(headX-headW*0.3,headY,w*0.12,h*0.12);ctx.fillRect(headX+headW*0.08,headY,w*0.12,h*0.12);ctx.fillStyle=boneColor;const legY=h*0.7+bob;const legH=h*0.3;const legW=w*0.12;if(!isAttacking){if(frame%2===0){ctx.fillRect(w*0.35,legY,legW,legH);ctx.fillRect(w*0.55,legY,legW,legH*0.8);}else{ctx.fillRect(w*0.35,legY,legW,legH*0.8);ctx.fillRect(w*0.55,legY,legW,legH);}}else{ctx.fillRect(w*0.35,legY,legW,legH);ctx.fillRect(w*0.55,legY,legW,legH);}ctx.fillStyle='#C0C0C0';if(isAttacking){ctx.fillRect(w*0.6,h*0.5+bob,w*0.3,w*0.08);}else{ctx.fillRect(w*0.7,h*0.5+bob,w*0.08,h*0.3);}};
         const drawDragon=(ctx,w,h,frame)=>{ctx.clearRect(0,0,w,h);const bodyX=w*0.3,bodyY=h*0.4,bodyW=w*0.5,bodyH=h*0.4;const wingYOffset=Math.sin(frame/8*Math.PI*2)*h*0.15;const tailWave=Math.sin(frame/8*Math.PI*2+Math.PI/2)*w*0.1;ctx.fillStyle='#111';ctx.beginPath();ctx.moveTo(bodyX,bodyY+bodyH/2);ctx.quadraticCurveTo(w*0.1,h*0.9,w*0.05+tailWave,h*0.7);ctx.quadraticCurveTo(w*0.15+tailWave,h*0.8,bodyX,bodyY+bodyH/2+5);ctx.closePath();ctx.fill();ctx.fillStyle='#222';ctx.fillRect(bodyX+bodyW*0.1,bodyY+bodyH*0.8,w*0.1,h*0.2);ctx.fillRect(bodyX+bodyW*0.6,bodyY+bodyH*0.8,w*0.1,h*0.2);ctx.fillStyle='#333';ctx.beginPath();ctx.moveTo(bodyX+bodyW*0.4,bodyY);ctx.lineTo(w*0.5,h*0.1-wingYOffset);ctx.lineTo(w*0.2,h*0.3-wingYOffset);ctx.closePath();ctx.fill();ctx.fillStyle='#000';ctx.fillRect(bodyX,bodyY,bodyW,bodyH);ctx.fillStyle='#222';ctx.fillRect(bodyX+bodyW*0.2,bodyY+bodyH*0.7,w*0.1,h*0.2);ctx.fillRect(bodyX+bodyW*0.7,bodyY+bodyH*0.7,w*0.1,h*0.2);const headX=bodyX+bodyW;const headY=bodyY;ctx.beginPath();ctx.moveTo(headX,headY);ctx.lineTo(w*0.95,headY-h*0.1);ctx.lineTo(w*0.9,headY+h*0.2);ctx.closePath();ctx.fill();ctx.fillStyle='red';ctx.fillRect(w*0.88,headY,3,3);ctx.fillStyle='#282828';ctx.beginPath();ctx.moveTo(bodyX+bodyW*0.6,bodyY);ctx.lineTo(w*0.9,h*0.2-wingYOffset);ctx.lineTo(w*0.4,h*0.3-wingYOffset);ctx.closePath();ctx.fill();};
         
